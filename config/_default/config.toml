@@ -1,4 +1,4 @@
 baseURL = "https://zivali.github.io/"
 languageCode = "en-us"
 title = "Ziva"
-theme = "ananke"
+theme = "PaperMod"
