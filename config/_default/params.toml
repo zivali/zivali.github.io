@@ -391,7 +391,7 @@ repo = ""
 # Twikoo comment 评论系统设置 (https://twikoo.js.org/)
 [page.comment.twikoo]
 commentCount = true
-enable = true
+enable = false
 envId = "https://doit-docs-comment-twikoo.vercel.app/"
 path = ""
 region = ""
