@@ -1,6 +1,6 @@
 [submodule "themes/DoIt"]
 	path = themes/DoIt
-	url = https://github.com/HEIGE-PCloud/DoIt.git
+	url = https://github.com/zivali/DoIt.git
 # [submodule "themes/PaperMod"]
 # 	path = themes/PaperMod
 # 	url = https://github.com/adityatelange/hugo-PaperMod.git
