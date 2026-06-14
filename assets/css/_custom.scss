@@ -12,6 +12,36 @@
   }
 }
 
+@media only screen and (min-width: 1001px) {
+  .page.archive:has(.series-card) {
+    width: calc(100% - 4rem);
+    max-width: 1200px;
+  }
+}
+
+.page.archive .series-card {
+  .card-item {
+    width: 100%;
+    min-height: auto;
+    padding: 0;
+
+    .card-item-wrapper {
+      overflow: visible;
+
+      .card-item-title {
+        display: block;
+        overflow-wrap: anywhere;
+      }
+    }
+  }
+
+  .archive-item-link {
+    min-width: 0;
+    overflow: visible;
+    text-overflow: clip;
+  }
+}
+
 @media only screen and (max-width: 680px) {
   .home[posts] {
     .summary {
