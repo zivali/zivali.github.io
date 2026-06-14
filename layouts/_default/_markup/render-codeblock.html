@@ -1,0 +1,76 @@
+{{- $result := transform.HighlightCodeBlock . -}}
+{{- $params := page.Scratch.Get "params" -}}
+{{- $id := dict "Scratch" .Page.Scratch | partial "function/id.html" -}}
+{{- $lines := len (split .Inner "\n") -}}
+{{- $maxShownLines := $params.code.maxshownlines -}}
+{{- $open := "is-open" -}}
+{{- if eq .Attributes.open nil -}}
+  {{- $open = cond (gt $lines $maxShownLines) "is-closed" "is-open" -}}
+{{- else -}}
+  {{- $open = cond (eq .Attributes.open false) "is-closed" "is-open" -}}
+{{- end -}}
+{{- $wrap := .Attributes.wrap | default $params.code.wrap | default false -}}
+{{- $isWrap := cond (eq $wrap true) "is-wrap" "" -}}
+{{- $header := .Attributes.header | default $params.code.header | default true -}}
+{{- $showHeader := cond (eq $header false) "tw-hidden" "" -}}
+<div class="code-block highlight {{ $open }} {{ $isWrap }} tw-group tw-my-2">
+  <div class="
+    {{ $showHeader }}
+    tw-flex
+    tw-flex-row
+    tw-flex-1
+    tw-justify-between
+    tw-w-full tw-bg-bgColor-secondary
+    ">
+    <button
+      class="
+        code-block-button
+        tw-mx-2
+        tw-flex
+        tw-flex-row
+        tw-flex-1"
+      title="Toggle code block"
+      aria-label="Toggle code block">
+          <div class="group-[.is-open]:tw-rotate-90 tw-transition-[transform] tw-duration-500 tw-ease-in-out print:!tw-hidden tw-w-min tw-h-min tw-my-1 tw-mx-1">{{- partial "plugin/fontawesome.html" (dict "Style" "solid" "Icon" "chevron-right") -}}</div>
+      </button>
+
+   <div class="tw-flex">
+      <button
+        class="
+          copy-code-button
+          tw-select-none
+          tw-mx-2
+          tw-hidden
+          group-[.is-open]:tw-block
+          hover:tw-text-fgColor-link
+          print:!tw-hidden"
+        title="Copy code">
+          <span class="copy-icon tw-block">
+            {{- partial "plugin/fontawesome.html" (dict "Style" "regular" "Icon" "copy") -}}
+          </span>
+          <span class="check-icon tw-hidden">
+            {{- partial "plugin/fontawesome.html" (dict "Style" "solid" "Icon" "check") -}}
+          </span>
+      </button>
+
+      <button class="wrap-code-button tw-hidden" hidden aria-hidden="true" tabindex="-1"></button>
+      <button class="line-number-button tw-hidden" hidden aria-hidden="true" tabindex="-1"></button>
+    </div>
+  </div>
+  <pre style="counter-reset: codeblock;" class="tw-block tw-m-0 tw-p-0"><code
+    id="codeblock-{{ $id }}"
+    class="
+      chroma
+      !tw-block
+      tw-p-0
+      tw-m-0
+      tw-transition-[max-height]
+      tw-duration-500
+      tw-ease-in-out
+      group-[.is-closed]:!tw-max-h-0
+      group-[.is-wrap]:tw-text-wrap
+      tw-overflow-y-hidden
+      tw-overflow-x-auto
+      tw-scrollbar-thin
+      ">{{ $result.Inner }}</code></pre>
+</div>

@@ -1,0 +1,23 @@
+// ==============================
+// Custom style
+// ==============================
+
+.home[posts] {
+  .summary {
+    .single-title {
+      font-size: 1.65rem;
+      line-height: 1.25;
+      margin: 0.5rem 0 0.35rem;
+    }
+  }
+}
+
+@media only screen and (max-width: 680px) {
+  .home[posts] {
+    .summary {
+      .single-title {
+        font-size: 1.45rem;
+      }
+    }
+  }
+}

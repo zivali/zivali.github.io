@@ -101,7 +101,7 @@ rss = 10
 # 最近更新文章设置
 [section.recentlyUpdated]
 days = 30
-enable = true
+enable = false
 maxCount = 10
 rss = true
 
@@ -169,6 +169,9 @@ pageStyle = "normal"
 # whether to enable series navigation
 # 是否使用系列导航
 seriesNavigation = true
+# whether to enable last modified time
+# 是否启用最后修改时间
+enableLastMod = false
 # Display a message at the beginning of an article to warn the reader that its content might be outdated.
 # 在文章开头显示提示信息，提醒读者文章内容可能过时。
 [page.outdatedArticleReminder]
@@ -240,7 +243,7 @@ mhchem = true
 [page.mapbox]
 # access token of Mapbox GL JS
 # Mapbox GL JS 的 access token
-accessToken = "pk.eyJ1IjoiZGlsbG9uenEiLCJhIjoiY2s2czd2M2x3MDA0NjNmcGxmcjVrZmc2cyJ9.aSjv2BNuZUfARvxRYjSVZQ"
+accessToken = ""
 # style for the light theme
 # 浅色主题的地图样式
 lightStyle = "mapbox://styles/mapbox/light-v10?optimize=true"
@@ -269,9 +272,9 @@ Digg = false
 Evernote = false
 Facebook = true
 Flipboard = false
-HackerNews = true
+HackerNews = false
 Instapaper = false
-Line = true
+Line = false
 Linkedin = false
 Mix = false
 Myspace = false
@@ -287,7 +290,7 @@ Trello = false
 Tumblr = false
 Twitter = true
 VK = false
-Weibo = true
+Weibo = false
 Whatsapp = false
 Xing = false
 enable = true

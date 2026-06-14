@@ -34,13 +34,21 @@
       title = ""
       weight = 2
     [[en.menu.main]]
+      identifier = "series"
+      pre = ""
+      post = ""
+      name = "Series"
+      url = "/series/"
+      title = ""
+      weight = 3
+    [[en.menu.main]]
       identifier = "about"
       pre = ""
       post = ""
       name = "About"
       url = "/about/"
       title = ""
-      weight = 3
+      weight = 4
     [[en.menu.main]]
       identifier = "github"
       pre = "<i class='fab fa-github fa-fw'></i>"
@@ -70,7 +78,7 @@
     [en.params.search]
       enable = true
       # type of search engine ("lunr", "algolia", "fuse")
-      type = "algolia"
+      type = "fuse"
       # max index length of the chunked content
       contentLength = 4000
       # placeholder of the search bar
@@ -142,4 +150,3 @@
     #  bio = "If you find this post helpful, please consider sponsoring."
     #  link = "https://github.com/sponsors/HEIGE-PCloud"
       # custom = "<a href=\"https://www.buymeacoffee.com/PCloud\" target=\"_blank\"><img src=\"https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png\" alt=\"Buy Me A Coffee\" style=\"height: 40px !important;width: 145 !important;\" ></a>"
-
