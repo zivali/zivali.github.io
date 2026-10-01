@@ -116,7 +116,7 @@
         # Gravatar Email for preferred avatar in home page
         gravatarEmail = ""
         # URL of avatar shown in home page
-        avatarURL = "/images/avatar.png"
+        avatarURL = "/images/avatar.jpeg"
         # title shown in home page (HTML format is supported)
         title = ""
         # subtitle shown in home page
