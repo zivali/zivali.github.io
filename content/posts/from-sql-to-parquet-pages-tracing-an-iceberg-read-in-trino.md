@@ -22,11 +22,9 @@ authors:
 
 
 The read path is where the Trino engine, the Iceberg connector, Iceberg
-metadata, Parquet files, and Trino `Page` objects all meet.
-
-
-The useful way to read this path is not as one long class chain. The useful
-question is:
+metadata, Parquet files, and Trino `Page` objects all meet. You could follow it
+as one long chain of classes, but I find it easier to follow by asking one
+question at each step:
 
 
 ```text
@@ -52,7 +50,7 @@ SQL
 ```
 
 
-This note traces one small query through those handoffs.
+In this note we trace one small query through each of those handoffs.
 
 
 ## The Setup
@@ -72,8 +70,7 @@ FROM tpch.tiny.orders;
 ```
 
 
-The rows come from TPC-H originally, but the traced table
-is:
+The rows originally come from TPC-H, but the table we trace is:
 
 
 ```text
@@ -81,9 +78,9 @@ iceberg.tpch.orders
 ```
 
 
-So the read path goes through the Iceberg connector, Iceberg split generation,
-and the Parquet reader. If I query `tpch.tiny.orders` directly, it would be tracing the
-TPC-H connector instead.
+The read path therefore goes through the Iceberg connector, Iceberg split
+generation, and the Parquet reader. Querying `tpch.tiny.orders` directly would
+trace the TPC-H connector instead.
 
 
 The query is:
@@ -96,15 +93,15 @@ WHERE o_orderstatus = 'F';
 ```
 
 
-The table is partitioned by `o_orderstatus`, so this is a good first read trace.
-The filter is simple enough to follow, and it should show up as an Iceberg
+Because the table is partitioned by `o_orderstatus`, this makes a good first
+trace: the filter is simple to follow, and it should show up as an Iceberg
 partition constraint.
 
 
 ## The Plan Evidence
 
 
-The compact `EXPLAIN` shape is:
+Here is the compact `EXPLAIN` output:
 
 
 ```text
@@ -119,7 +116,7 @@ Fragment 0 [SOURCE]
 ```
 
 
-The first thing this proves is modest:
+On its own, this shows only one thing:
 
 
 ```text
@@ -127,12 +124,9 @@ Trino planned a scan of the Iceberg table with a constraint on o_orderstatus.
 ```
 
 
-It does not prove how many bytes were read. It does not prove how many splits
-ran. It does not prove the runtime row count. `EXPLAIN` gives plan shape and
-estimates.
-
-
-The `EXPLAIN ANALYZE` output is the runtime check:
+It says nothing about how many bytes were read, how many splits ran, or how
+many rows came back at runtime. `EXPLAIN` gives plan shape and estimates. For
+runtime numbers we need `EXPLAIN ANALYZE`:
 
 
 ```text
@@ -145,7 +139,7 @@ TableScan[table = iceberg:tpch.orders$data@... constraint on [o_orderstatus]]
 ```
 
 
-That is the difference:
+Side by side, the two commands answer different questions:
 
 
 ```text
@@ -157,19 +151,17 @@ EXPLAIN ANALYZE:
 ```
 
 
-For this query, the plan is one source fragment. There is no `RemoteSource`
-chain to rebuild because the query is a simple scan returning rows. The harder
-fragment-reading habit from the previous post still matters later, but this
-post is about the scan boundary.
+For this query the plan is a single source fragment. Since the query is a
+simple scan that returns rows, there is no `RemoteSource` chain to rebuild. The
+fragment-reading habit from the previous post will matter again later, but this
+post stays at the scan boundary.
 
 
 ## The Table Handle
 
 
-Before workers read bytes, the coordinator has to resolve the table.
-
-
-The useful handoff is:
+Before workers read any bytes, the coordinator has to resolve the table. That
+happens here:
 
 
 ```text
@@ -179,11 +171,9 @@ MetadataManager.getTableHandle(...)
 ```
 
 
-The table handle is not the table data. It is the connector-specific object
-Trino carries through planning and execution to represent this scan.
-
-
-For Iceberg, the handle is where I expect to find facts such as:
+The table handle does not hold table data. It is the connector-specific object
+Trino carries through planning and execution to represent this scan. For
+Iceberg, the handle is where I expect to find facts such as:
 
 
 ```text
@@ -197,12 +187,9 @@ table location
 ```
 
 
-The snapshot id is important. Iceberg tables are snapshot-based, so the query
-does not just read “whatever files exist under a directory.” It reads the files
-that belong to the selected Iceberg snapshot.
-
-
-The metadata chain behind that snapshot is:
+The snapshot id matters because Iceberg tables are snapshot-based. The query
+reads the files that belong to the selected snapshot, not “whatever files exist
+under a directory.” The metadata chain behind that snapshot looks like this:
 
 
 ```text
@@ -215,8 +202,8 @@ catalog
 ```
 
 
-That chain is Iceberg metadata work. It happens before the Parquet reader starts
-decoding row data.
+All of this is Iceberg metadata work, and it happens before the Parquet reader
+starts decoding row data.
 
 
 ## Predicate Pushdown
@@ -230,10 +217,8 @@ WHERE o_orderstatus = 'F'
 ```
 
 
-becomes a predicate that the optimizer tries to push into the table scan.
-
-
-The handoff is:
+becomes a predicate that the optimizer tries to push into the table scan,
+through this path:
 
 
 ```text
@@ -243,7 +228,7 @@ PushPredicateIntoTableScan
 ```
 
 
-Inside Iceberg, the important split is:
+Inside Iceberg, the predicate is sorted into three buckets:
 
 
 ```text
@@ -259,9 +244,8 @@ remaining predicate:
 ```
 
 
-For this table, `o_orderstatus` is an identity partition column. That means the
-predicate `o_orderstatus = 'F'` can be enforced by Iceberg partition metadata.
-The plan evidence agrees:
+In this table, `o_orderstatus` is an identity partition column, so Iceberg
+partition metadata can enforce `o_orderstatus = 'F'`. The plan agrees:
 
 
 ```text
@@ -271,7 +255,7 @@ o_orderstatus := 3:o_orderstatus:varchar
 ```
 
 
-The stronger example for later is:
+A more interesting example, which I'll come back to later, adds a second filter:
 
 
 ```sql
@@ -282,7 +266,7 @@ WHERE o_orderstatus = 'F'
 ```
 
 
-That query has two different predicate shapes:
+The two predicates likely land in different buckets:
 
 
 | Predicate             | Likely bucket           | Why                                                                                                           |
@@ -291,7 +275,7 @@ That query has two different predicate shapes:
 | `o_totalprice > 1000` | unenforced or remaining | Iceberg may use file statistics, but partition metadata alone does not prove every returned row satisfies it. |
 
 
-The habit to keep:
+So when reading a plan, keep this in mind:
 
 
 ```text
@@ -302,11 +286,8 @@ The habit to keep:
 ## From Metadata To Splits
 
 
-After planning, the scheduler needs source work for workers. For a table scan,
-that means split generation.
-
-
-The engine path is:
+Once planning is done, the scheduler needs source work to hand to workers. For a
+table scan, that means generating splits. On the engine side, the path is:
 
 
 ```text
@@ -330,14 +311,12 @@ IcebergSplitManager.getSplits(...)
 
 
 This is where the table handle turns into concrete read work.
-
-
 `IcebergSplitManager.getScan(...)` builds an Iceberg scan from the selected
 snapshot and projected columns. `IcebergSplitSource` plans file tasks and turns
 those tasks into Trino connector splits.
 
 
-An `IcebergSplit` is one read unit. It can carry:
+Each `IcebergSplit` is one unit of read work. It can carry:
 
 
 ```text
@@ -360,11 +339,8 @@ Splits: 1
 ```
 
 
-That is runtime evidence that this simple partition read produced one executed
-split in the traced run.
-
-
-The important mental model:
+So in the traced run, this simple partition read executed one split. The
+division of labor between the two systems is:
 
 
 ```text
@@ -376,10 +352,8 @@ Trino splits make that selected work schedulable on workers.
 ## Worker Read Path
 
 
-Once a worker receives a split, it needs a connector page source.
-
-
-The engine bridge is:
+When a worker receives a split, it needs a connector page source. The engine
+asks for one through:
 
 
 ```text
@@ -397,11 +371,9 @@ IcebergPageSourceProvider.createPageSource(...)
 ```
 
 
-At this point the table is no longer just metadata and splits. The worker is
-opening the selected data file and creating a reader for the file format.
-
-
-For this table, the data format is Parquet, so the read path continues into:
+At this point we are past metadata and splits. The worker opens the selected
+data file and creates a reader for its file format. This table uses Parquet, so
+the path continues into:
 
 
 ```text
@@ -413,11 +385,8 @@ MetadataReader.readFooter(...)
 
 
 Parquet adds its own pruning layer. Iceberg can prune manifests and files before
-opening data files. Parquet can then use row group, column chunk, and page
-metadata inside a selected file.
-
-
-Those are different layers:
+any data file is opened, and Parquet can then use row group, column chunk, and
+page metadata inside a selected file. The two layers work on different things:
 
 
 ```text
@@ -429,15 +398,15 @@ Parquet:
 ```
 
 
-Keeping those layers separate avoids a common confusion: Iceberg did not “read a
-Parquet row group” during manifest pruning. It selected data files. The Parquet
-reader handles row groups after the file is selected.
+Keeping them separate avoids a common confusion. Iceberg did not “read a Parquet
+row group” during manifest pruning; it selected data files. The Parquet reader
+deals with row groups after a file is selected.
 
 
 ## From Parquet To Trino Page
 
 
-The worker-side operator path is usually one of these:
+On the worker, the operator that pulls pages is usually either:
 
 
 ```text
@@ -453,11 +422,8 @@ ScanFilterAndProjectOperator
 ```
 
 
-The exact path depends on whether the optimizer leaves remaining filter/project
-work above the scan.
-
-
-The page path to remember is:
+Which one you get depends on whether the optimizer leaves filter or project work
+above the scan. Either way, a page travels like this:
 
 
 ```text
@@ -470,7 +436,8 @@ ParquetReader.nextPage()
 ```
 
 
-A Trino `Page` is an in-memory columnar batch. It is not a Parquet page.
+Despite the shared name, a Trino `Page` is not a Parquet page. It is an
+in-memory columnar batch:
 
 
 ```text
@@ -482,7 +449,7 @@ Trino Page:
 ```
 
 
-The trace is complete when I can point to one returned page and say:
+I consider the trace complete when I can point to one returned page and say:
 
 
 ```text
@@ -496,7 +463,7 @@ The page then entered the engine operator pipeline.
 ## What The Query Proves
 
 
-The query:
+Putting it together, the query
 
 
 ```sql
@@ -506,7 +473,7 @@ WHERE o_orderstatus = 'F';
 ```
 
 
-proves this read shape:
+shows this read shape:
 
 
 ```text
@@ -536,7 +503,7 @@ Engine:
 ## Minimal Trace Note Template
 
 
-This is the compact template I want to reuse for future read traces:
+For future read traces, I want to fill in a template like this one:
 
 
 ```text
