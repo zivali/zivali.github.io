@@ -13,9 +13,11 @@ authors:
 ---
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.2/dist/katex.min.css" integrity="sha384-bYdxxUwYipFNohQlHt0bjN/LCpueqWz13HufFEV1SUatKs1cm4L6fFgCi1jT643X" crossorigin="anonymous">
 
-1. Create schema on target cluster
+Cloning a partitioned Hive table takes three steps: recreate the schema on the target, copy the data files, and then tell the metastore about the partitions. The examples below use a table called `mycart`.
 
-	We can use `show create table` to get the create table sql of the table we would like to clone.
+1. Create the schema on the target cluster
+
+	Run `show create table` on the source table to get its DDL.
 
 
 	```bash
@@ -42,10 +44,7 @@ authors:
 	```
 
 
-	The LOCATION property should be removed.
-
-
-	You can determine whether you need the same TBLPROPERTIES in your new table. e.g.
+	Remove the `LOCATION` clause so the new table gets its own directory, and decide whether the new table needs the same `TBLPROPERTIES`. Without either, the statement looks like this:
 
 
 	```bash
@@ -63,15 +62,9 @@ authors:
 	  'org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat'
 	```
 
-1. Copy the partitions you would like to clone to your target cluster
+1. Copy the partitions you want to clone to the target cluster
 
-	Same cluster: 
-
-
-	Use `hadoop fs -cp` to copy the table to targeted location.
-
-
-	The original directory can be found in the create table sql we got in step 1.
+	Within the same cluster, use `hadoop fs -cp` to copy the table directory to the new location. The original directory is the `LOCATION` from the DDL in step 1.
 
 
 	```bash
@@ -80,10 +73,7 @@ authors:
 	```
 
 
-	Intra-cluster copying
-
-
-	Use `hadoop distcp` to perform Intra-cluster copying.
+	To copy between clusters, use `hadoop distcp` instead.
 
 
 	```bash
@@ -93,13 +83,12 @@ authors:
 
 1. Sync partition info to table metadata
 
-	`msck repair table` Reads the directory structure, creates partitions out of it and then updates the hive metastore. 
+	The copied files are not visible to queries until the metastore knows about their partitions. `msck repair table` reads the directory structure, creates partitions from it, and updates the Hive metastore. It also removes partitions from the metastore whose directories no longer exist.
 
-	- This command removes non-existing partitions from metastore as well.
-	- This may be slow because:
-		- `msck repair` will have to do a full-tree traversal of all the sub-directories under the table directory, parse the file names, make sure that the file names are valid, check if the partition is already existing in the metastore and then add the only partitions which are not present in the metastore.
-		- Each listing on the filesystem is a RPC to the namenode (HDFS) or a web-service (S3) which can add to significant amount of time.
-		- Additionally, in order to figure out if the partition is already present in metastore or not, it needs to do a full listing of all the partitions which metastore knows of for the table.
+	On a large table this can be slow, for a few reasons:
+	- `msck repair` does a full traversal of every sub-directory under the table directory. It parses the file names, checks that they are valid, checks whether each partition already exists in the metastore, and adds only the ones that are missing.
+	- Each filesystem listing is an RPC to the namenode (HDFS) or a web-service call (S3), and these add up.
+	- To know which partitions already exist, it also has to list every partition the metastore has for the table.
 
 	```bash
 	msck repair table mycart;
