@@ -61,13 +61,13 @@ jobs:
         id: pages
         uses: actions/configure-pages@v4
 
-      - name: Build with Hugo
-        env: # Or as an environment variable
-         NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+      - name: Check tags and categories
         run: |
           npm install
-          npm start
-          hugo
+          npm run tags:check
+
+      - name: Build with Hugo
+        run: hugo
 
       # - name: Commit updated content
       #   uses: stefanzweifel/git-auto-commit-action@v4

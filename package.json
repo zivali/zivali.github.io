@@ -19,7 +19,10 @@
     "start": "ts-node src/index.ts",
     "typecheck": "tsc --noEmit",
     "build": "tsc",
-    "format": "prettier --write src/**/*.ts"
+    "format": "prettier --write src/**/*.ts",
+    "tags": "node scripts/tags.mjs",
+    "tags:check": "node scripts/tags.mjs --check",
+    "migrate:clean": "node scripts/clean-notion.mjs"
   },
   "keywords": [
     "Notion",
