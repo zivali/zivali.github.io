@@ -87,3 +87,12 @@
     }
   }
 }
+
+// Inline code (`...`) must never be split across lines
+code:not(.chroma),
+.single .content code:not(.chroma) {
+  white-space: nowrap;
+  word-break: keep-all;
+  @include overflow-wrap(normal);
+  @include line-break(auto);
+}
