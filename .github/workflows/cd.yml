@@ -4,9 +4,6 @@ on:
   push:
     branches:
       - 'main'
-
-  schedule:
-    - cron: '0 6 * * 3' # run once per Wednesday at 06:00 UTC
   workflow_dispatch:
     
 
@@ -32,15 +29,8 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
-    env:
-      CLOUDFLARE_PAGES_DEPLOY_HOOK: ${{ secrets.CLOUDFLARE_PAGES_DEPLOY_HOOK }}
 
     steps:
-      - name: Trigger Cloudflare Pages build
-        if: startsWith(env.CLOUDFLARE_PAGES_DEPLOY_HOOK, 'https://api.cloudflare.com/client/v4/pages/webhooks/deploy_hooks/') && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
-        run: curl -X POST ${{ secrets.CLOUDFLARE_PAGES_DEPLOY_HOOK }}
-
-
       - uses: actions/checkout@v4
         with:
           submodules: true  # Fetch Hugo themes (true OR recursive)
@@ -68,11 +58,6 @@ jobs:
 
       - name: Build with Hugo
         run: hugo
-
-      # - name: Commit updated content
-      #   uses: stefanzweifel/git-auto-commit-action@v4
-      #   with:
-      #     commit_message: Sync content with Notion
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

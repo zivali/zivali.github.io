@@ -7,17 +7,27 @@ on:
     branches: [main]
 
 env:
-  NODE_VERSION: 16.x
+  NODE_VERSION: 23.x
 
 jobs:
-  typecheck:
+  build:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/setup-node@v3
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
-      - uses: actions/checkout@v3
+
+      - uses: peaceiris/actions-hugo@v3
+        with:
+          hugo-version: 'latest'
+          extended: true
+
       - run: |
           npm install
-          npm run typecheck
+          npm run tags:check
+          hugo
