@@ -544,7 +544,7 @@ explains its higher median here.
 ## Run the companion lab locally
 
 
-The companion lab contains the Docker Compose setup, data generation, strategy
+The [companion lab](https://github.com/zivali/spark-join-strategies-lab) contains the Docker Compose setup, data generation, strategy
 commands, Spark UI URLs, evidence checklist, and cleanup instructions. For a
 fair benchmark, compare Broadcast Hash, Shuffle Hash, and Sort-Merge using the
 same `fact` and `products` inputs at one scale; the Cartesian and Broadcast
