@@ -16,13 +16,12 @@ authors:
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.2/dist/katex.min.css" integrity="sha384-bYdxxUwYipFNohQlHt0bjN/LCpueqWz13HufFEV1SUatKs1cm4L6fFgCi1jT643X" crossorigin="anonymous">
 
 
-Trino can feel hard to learn because the execution vocabulary is unfamiliar:
-coordinator, worker, catalog, connector, split, stage, task, driver, operator,
-page, block.
+A lot of what makes Trino hard to pick up is vocabulary: coordinator, worker,
+catalog, connector, split, stage, task, driver, operator, page, block.
 
 
-The useful way to learn Trino is to follow one query through the system and keep
-asking the same question:
+What has worked for me is to follow one query through the system and keep asking
+the same question:
 
 
 ```text
@@ -31,15 +30,15 @@ move next?
 ```
 
 
-Before tracing into a real query, the first thing to
-keep straight is the runtime map: which objects exist, where planning stops,
-where execution starts, and how data moves between them.
+Before tracing a real query, it helps to have the runtime map in place: which
+objects exist, where planning stops, where execution starts, and how data moves
+between them. That map is what this note covers.
 
 
 ## The Small Example
 
 
-Imagine this query:
+We will use this query as the running example:
 
 
 ```sql
@@ -93,7 +92,7 @@ SQL client
 ```
 
 
-The most important split is:
+Most of that path falls on one side of a single division:
 
 
 ```text
@@ -113,7 +112,7 @@ query can be split into many pieces of work and executed across multiple workers
 at the same time.
 
 
-For this note, the important part is:
+For this note, that comes down to four roles:
 
 
 ```text
@@ -131,12 +130,16 @@ final result:
 ```
 
 
-This is why Trino has words like stage, task, split, driver, operator, and
-exchange. They are the pieces that make one SQL query run as distributed work
-instead of one local process reading everything by itself.
+Stage, task, split, driver, operator, and exchange all exist because of this.
+They are how one SQL query runs as distributed work instead of as one local
+process reading everything by itself.
 
 
 ## Architecture
+
+
+The first diagram shows the control and data paths between the client, the
+coordinator, and the workers:
 
 
 ```mermaid
@@ -164,7 +167,7 @@ flowchart TB
 ```
 
 
-The same query also has a connector boundary:
+The same query also crosses a connector boundary, shown in the second diagram:
 
 
 ```mermaid
@@ -201,7 +204,7 @@ coordinator.
 
 Connectors let Trino query systems outside the engine. Iceberg, Hive, JDBC,
 Kafka, TPCH, and Memory are all connector-backed access paths. For lakehouse
-tables, connectors are where many important behaviors live: metadata lookup,
+tables, a lot of the interesting behavior lives in the connector: metadata lookup,
 predicate pushdown, partition pruning, split generation, statistics, and file
 reading.
 
@@ -209,7 +212,7 @@ reading.
 ## Query Lifecycle
 
 
-For a normal read query, the lifecycle is:
+A normal read query goes through these steps:
 
 
 ```text
@@ -231,7 +234,7 @@ fragment as the planned distributed unit that becomes stage work during
 execution.
 
 
-That list is dense, but the control/data split keeps it understandable:
+The list is dense, but it sorts cleanly along the control/data split:
 
 
 ```text
@@ -250,7 +253,7 @@ at connector boundaries:
 ## The Runtime Hierarchy
 
 
-The runtime hierarchy to memorize is:
+Once a query is running, its work is organized in this hierarchy:
 
 
 ```text
@@ -264,7 +267,7 @@ Query
 ```
 
 
-Here is the same idea as a diagram:
+The same hierarchy as a diagram, with splits and exchanges added:
 
 
 ```mermaid
@@ -282,7 +285,7 @@ flowchart TB
 ```
 
 
-Each level has a specific job.
+The table below gives a one-line meaning for each term.
 
 
 | Concept  | Short meaning                                                                     |
@@ -302,16 +305,14 @@ way drivers and operators are; they are the scan work that a source task
 processes.
 
 
-This hierarchy is more useful than trying to remember class names first.
+I found it easier to learn this hierarchy first and the class names later.
 
 
 ## Stage And Task
 
 
-A stage is a distributed piece of the query plan.
-
-
-For example, a query might have:
+A stage is a distributed piece of the query plan. For example, a query might
+have:
 
 
 ```text
@@ -334,18 +335,15 @@ workers. Those tasks process splits in parallel. The coordinator decides where
 tasks and splits should go; workers execute the local work they receive.
 
 
-The important correction is that a stage is not a worker. A stage is part of the
-plan. A task is that stage’s work running on a worker.
+A common mistake is to think of a stage as a worker. A stage is part of the
+plan; a task is that stage’s work running on a worker.
 
 
 ## Split
 
 
-A split is a unit of work for reading data.
-
-
-For file-based lakehouse tables, a split often maps to a file or byte range.
-For example:
+A split is a unit of work for reading data. For file-based lakehouse tables, a
+split often maps to a file or byte range, for example:
 
 
 ```text
@@ -360,8 +358,8 @@ has splits to schedule; the connector understands what those splits mean for the
 underlying system.
 
 
-That boundary matters. The Trino scheduler can assign work to workers, but the
-Iceberg connector decides which data files belong to a snapshot and how to turn
+In practice, the Trino scheduler assigns work to workers, but the Iceberg
+connector decides which data files belong to a snapshot and how to turn
 them into Iceberg splits.
 
 
@@ -391,7 +389,7 @@ A driver is one running copy of a pipeline. If the pipeline is the recipe, a
 driver is one active execution of that recipe.
 
 
-An operator is one step inside the driver:
+An operator is one step inside the driver. The ones we will see most often are:
 
 
 ```text
@@ -419,7 +417,7 @@ next.addInput(Page)
 ```
 
 
-For the example query, a source pipeline might do this:
+For our example query, a source pipeline might do this:
 
 
 ```text
@@ -436,10 +434,8 @@ The data moves in batches, not as individual Java objects for each SQL row.
 ## Page And Block
 
 
-A Trino `Page` is an in-memory batch of rows in columnar form.
-
-
-Conceptually, it looks like this:
+A Trino `Page` is an in-memory batch of rows in columnar form. Conceptually, it
+looks like this:
 
 
 ```text
@@ -464,7 +460,7 @@ position 2 -> 103, "O"
 ```
 
 
-Vocabulary:
+Four terms describe this layout:
 
 
 | Term     | Meaning                            |
@@ -475,12 +471,12 @@ Vocabulary:
 | Channel  | Column index inside the page.      |
 
 
-This is why Trino is often described as processing columnar batches internally.
-Operators pass `Page` objects to each other, and each page contains one `Block`
-per output column.
+This is what people mean when they say Trino processes columnar batches
+internally. Operators pass `Page` objects to each other, and each page contains
+one `Block` per output column.
 
 
-Do not confuse a Trino page with a Parquet page. They are different things:
+A Trino page is not the same thing as a Parquet page:
 
 
 ```text
@@ -492,7 +488,7 @@ Parquet page:
 ```
 
 
-The names overlap, but the layers are different.
+The names overlap, but they belong to different layers.
 
 
 ## Connector Boundary
@@ -502,7 +498,7 @@ The connector boundary is where Trino stops being only a query engine and starts
 talking to an external system.
 
 
-For the example table:
+Our example reads from:
 
 
 ```sql
@@ -538,7 +534,8 @@ produce final results
 ```
 
 
-Keeping that boundary clear prevents a lot of confusion. If a filter is pushed
+Knowing which side of the boundary something is on answers a lot of questions
+later. If a filter is pushed
 into Iceberg, that is connector behavior. If a stage exchanges pages between
 workers, that is engine execution behavior.
 
@@ -558,8 +555,8 @@ worker-local task executor:
 ```
 
 
-The coordinator is not centrally stepping every operator one by one. It places
-work on workers and tracks progress. After that, each worker has local execution
+The coordinator does not step through every operator itself. It places work on
+workers and tracks progress. After that, each worker has local execution
 queues and runs its assigned work.
 
 
@@ -583,8 +580,7 @@ exchange, or another stage.
 ## What This Means For EXPLAIN
 
 
-For `EXPLAIN`, the main thing to keep from this section is the small set of plan
-terms that connect back to the runtime model:
+A small set of `EXPLAIN` plan terms map back to the runtime model above:
 
 
 ```text
@@ -634,7 +630,7 @@ Which fragment produces the final result?
 ```
 
 
-That exercise is the fastest way to turn the vocabulary into intuition.
+Answering these against a real plan is where the vocabulary starts to stick.
 
 
 ## Self-Check

@@ -18,7 +18,7 @@ authors:
 # Iceberg DELETE Is Not An In-Place Row Update
 
 
-A common wrong assumption is:
+A common assumption is that DELETE works like this:
 
 
 ```text
@@ -26,10 +26,7 @@ DELETE finds a row inside a Parquet file and edits that file in place.
 ```
 
 
-That is not how Iceberg row-level DELETE works.
-
-
-The correction is:
+That is not how Iceberg row-level DELETE works. What actually happens is:
 
 
 ```text
@@ -42,7 +39,7 @@ snapshot. Other times Trino has to read matching rows, carry row identity, write
 delete information, and commit a new Iceberg row-change snapshot.
 
 
-The two paths are:
+Side by side, the two paths look like this:
 
 
 ```text
@@ -57,15 +54,15 @@ row-level DELETE:
 ```
 
 
-This note is about that distinction. It builds on the CTAS and INSERT write
-path from the previous note, but DELETE is harder because it is not just an
-append of new data files.
+This post walks through both paths using one small table. It builds on the
+CTAS and INSERT write path from the previous note, but DELETE is harder because
+it does more than append new data files.
 
 
 ## The Setup
 
 
-Use the same small table shape as the write-path note:
+We'll reuse the same small table shape as the write-path note:
 
 
 ```sql
@@ -90,8 +87,8 @@ FROM (
 ```
 
 
-The table is partitioned by `orderstatus`, so it can show two different DELETE
-shapes:
+Because the table is partitioned by `orderstatus`, it can show two different
+DELETE shapes:
 
 
 ```sql
@@ -117,15 +114,12 @@ trace because `orderkey` is a regular data column.
 ## Path 1: Metadata DELETE
 
 
-A metadata DELETE is the simpler path.
-
-
-If the predicate can be represented as whole-file or whole-partition removal,
+A metadata DELETE is the simpler path. If the predicate can be represented as whole-file or whole-partition removal,
 Trino can let the Iceberg connector remove matching files from the current
 table snapshot.
 
 
-The useful shape is:
+At the plan level, the flow is:
 
 
 ```text
@@ -156,12 +150,13 @@ If all rows in a matching data file belong to `orderstatus = 'P'`, Iceberg can
 drop that file from the visible snapshot.
 
 
-That distinction matters because Iceberg supports snapshot-based reads. An older
+The difference between the snapshot and storage matters because Iceberg
+supports snapshot-based reads. An older
 snapshot may still reference the data file that the current snapshot no longer
 uses. That is what makes time travel possible.
 
 
-The plan clue is:
+In the plan, this path shows up as:
 
 
 ```text
@@ -169,7 +164,7 @@ TableDelete
 ```
 
 
-The Iceberg check is:
+On the Iceberg side, we can check the snapshots and files metadata tables:
 
 
 ```sql
@@ -197,8 +192,8 @@ ORDER BY content, file_path;
 ```
 
 
-The exact file names do not matter. The important check is whether the current
-snapshot stopped referencing a matching data file.
+The exact file names do not matter. What we want to see is whether the
+current snapshot stopped referencing a matching data file.
 
 
 To make the time-travel behavior concrete, capture the snapshot id before and
@@ -242,7 +237,7 @@ table history.
 ## Path 2: Row-Level DELETE
 
 
-This query is the clearer row-level example:
+The second query is the clearer row-level example:
 
 
 ```sql
@@ -264,11 +259,9 @@ which row position inside that file?
 ```
 
 
-That is the key difference from CTAS and INSERT.
-
-
-CTAS and INSERT write new data rows. Row-level DELETE reads existing rows to
-produce delete coordinates.
+This is the main difference from CTAS and INSERT. Those statements write new
+data rows, while row-level DELETE reads existing rows to produce delete
+coordinates.
 
 
 ## The Row-Level Plan Shape
@@ -303,7 +296,7 @@ Fragment 2 [SOURCE]
 ```
 
 
-The exact symbols can vary, but these pieces matter:
+The exact symbols can vary, but five pieces are worth reading closely:
 
 
 | Plan piece                 | Meaning                                                |
@@ -315,9 +308,8 @@ The exact symbols can vary, but these pieces matter:
 | `TableCommit`              | Commits the final Iceberg row-change snapshot.         |
 
 
-This is why the published
-EXPLAIN post
-matters here. The printed order starts at fragment `0`, but the data flow is:
+As in the published [EXPLAIN post]({{< relref "how-to-read-a-trino-distributed-explain-plan.md" >}}), the printed order starts at fragment `0`,
+but the data flows the other way:
 
 
 ```text
@@ -335,7 +327,7 @@ Fragment 0
 ## Fragment 2: Read And Identify Rows
 
 
-Fragment 2 is the source side:
+Fragment 2 is the source side of the plan:
 
 
 ```text
@@ -344,11 +336,9 @@ ScanFilterProject[
 ```
 
 
-It reads the matching row. But the output is not only user columns like
-`orderkey`, `custkey`, `orderstatus`, and `totalprice`.
-
-
-The row-level DELETE plan also creates control columns:
+It reads the matching row, but its output is more than the user columns
+`orderkey`, `custkey`, `orderstatus`, and `totalprice`. The row-level DELETE
+plan also creates control columns:
 
 
 ```text
@@ -359,7 +349,7 @@ field := $merge_row_id(...)
 ```
 
 
-The important one is:
+The one that matters most for DELETE is the row id:
 
 
 ```text
@@ -385,8 +375,8 @@ source_row_id:
 ```
 
 
-This is the proof that Trino is not editing the Parquet row directly. It is
-reading the row so the connector can later say:
+This is what shows that Trino is not editing the Parquet row directly. It reads
+the row so the connector can later say:
 
 
 ```text
@@ -397,7 +387,7 @@ hide the row at this file and position
 ## Fragment 1: Write Delete Information
 
 
-Fragment 1 receives rows from fragment 2:
+Fragment 1 receives these rows from fragment 2:
 
 
 ```text
@@ -405,7 +395,7 @@ RemoteSource[sourceFragmentIds = [2]]
 ```
 
 
-The important operator is:
+and passes them to `MergeWriter`:
 
 
 ```text
@@ -413,8 +403,8 @@ MergeWriter[table = iceberg:write_trace.orders_delta$data@...]
 ```
 
 
-The name `MergeWriter` can be confusing in a DELETE post. It does not mean the
-SQL statement is `MERGE`. It means Trino is using the row-change writer
+The name `MergeWriter` can be confusing in a DELETE plan. It does not mean the
+SQL statement is `MERGE`; it means Trino is using its row-change writer
 machinery. DELETE, UPDATE, and MERGE all need a way to send row-change commands
 to the connector.
 
@@ -424,7 +414,7 @@ row-change sink. The connector groups deleted row positions by referenced data
 file.
 
 
-The result depends on the Iceberg table format version:
+What gets written depends on the Iceberg table format version:
 
 
 | Iceberg format | Row-level delete representation |
@@ -433,7 +423,7 @@ The result depends on the Iceberg table format version:
 | Format v3      | Deletion vectors can be used.   |
 
 
-The shared idea is:
+In both cases:
 
 
 ```text
@@ -448,7 +438,7 @@ the table snapshot.
 ## Fragment 0: Commit The RowDelta
 
 
-Fragment 0 is coordinator-only:
+Fragment 0 runs only on the coordinator:
 
 
 ```text
@@ -462,7 +452,7 @@ The workers have already produced delete fragments. The coordinator gathers
 those fragments and asks Iceberg to commit the row-level change.
 
 
-For row-level DELETE, the Iceberg commit concept is:
+For row-level DELETE, the Iceberg commit type is:
 
 
 ```text
@@ -474,7 +464,7 @@ The commit adds delete metadata to a new snapshot. After the commit, readers use
 Iceberg metadata to understand that the old row is no longer visible.
 
 
-The important contrast with CTAS / INSERT is:
+Compared with CTAS and INSERT:
 
 
 ```text
@@ -526,7 +516,7 @@ ORDER BY content, file_path;
 ```
 
 
-For row-level DELETE:
+For row-level DELETE, we expect:
 
 
 ```text
@@ -540,7 +530,7 @@ after DELETE:
 ```
 
 
-Confirm the visible table result:
+Finally, confirm the visible table result:
 
 
 ```sql
@@ -566,15 +556,15 @@ The deleted `orderkey = 1` row should not appear after the row-level DELETE.
 | Final `SELECT`               | The row is no longer visible through the table.                          |
 
 
-The evidence does not prove that Parquet bytes were edited in place. In fact,
-the plan points in the other direction: Trino reads the row, carries its file
+None of this shows Parquet bytes being edited in place. The plan points the
+other way: Trino reads the row, carries its file
 and position, writes delete metadata, and commits a new snapshot.
 
 
 ## Code Anchors
 
 
-These names are useful after the plan shape is clear:
+Once the plan shape is clear, these are the places to look in the Trino source:
 
 
 | Concept                                          | Code area                                                                                                   |
@@ -602,7 +592,7 @@ anchors are only for checking the handoff after the fragments make sense.
 | MERGE            | read, classify, write inserts/deletes                 | write insert and delete outputs        | commit row-change fragments   | `RowDelta`            |
 
 
-The key learning step is:
+Putting the statements next to each other makes one thing clear:
 
 
 ```text
@@ -616,18 +606,15 @@ row identity and commit delete metadata. Neither path means “open the Parquet
 file and edit the old row in place.”
 
 
-## What To Remember
+## Summary
 
-- Iceberg tables are snapshot-based.
-- DELETE changes which files or rows are visible in a new snapshot.
-- Metadata DELETE removes whole matching files from the current snapshot when
-the predicate allows it.
-- The physical file may remain while older snapshots can still time-travel to
-it.
-- Row-level DELETE reads matching rows and carries `$merge_row_id`.
-- `$merge_row_id` includes file and position information.
-- Format v2 row-level DELETE uses position delete files.
-- Format v3 can use deletion vectors.
-- `MergeWriter` in a DELETE plan means row-change writer machinery, not
-necessarily a SQL `MERGE` statement.
-- The old Parquet row is not edited in place.
+Iceberg tables are snapshot-based, and DELETE changes which files or rows are
+visible in a new snapshot. When the predicate allows it, a metadata DELETE
+removes whole matching files from the current snapshot, though the physical
+file may remain while older snapshots can still time-travel to it.
+
+Row-level DELETE reads matching rows and carries `$merge_row_id`, which includes
+file and position information. Format v2 writes position delete files, and
+format v3 can use deletion vectors. `MergeWriter` in a DELETE plan means the
+row-change writer machinery, not necessarily a SQL `MERGE` statement. In
+neither case is the old Parquet row edited in place.

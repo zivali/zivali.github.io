@@ -16,11 +16,12 @@ authors:
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.2/dist/katex.min.css" integrity="sha384-bYdxxUwYipFNohQlHt0bjN/LCpueqWz13HufFEV1SUatKs1cm4L6fFgCi1jT643X" crossorigin="anonymous">
 
 
-Parquet is the storage-format layer that sits between Iceberg’s selected data
-files and Trino’s in-memory execution batches.
+Once Iceberg has picked the data files for a scan, Parquet decides how those
+files are actually read. It sits between Iceberg's selected data files and
+Trino's in-memory execution batches.
 
 
-For a Trino scan, the useful read shape is:
+At a high level, a Trino scan of a Parquet file looks like this:
 
 
 ```text
@@ -33,16 +34,17 @@ read file metadata
 ```
 
 
-This note is the storage-format bridge before tracing a real Iceberg read query.
-The previous note explained how Iceberg metadata points to data files. This one
-explains what happens after a selected data file is Parquet: how row groups,
-column chunks, pages, encodings, and Trino `Page` objects fit together.
+The previous note in this series covered how Iceberg metadata points to data
+files. This one picks up after a selected data file is opened as Parquet and
+walks through how row groups, column chunks, pages, encodings, and Trino `Page`
+objects fit together. The next note uses this vocabulary to trace a real Iceberg
+read query.
 
 
 ## Row-Based vs Columnar Storage
 
 
-Start with a tiny table:
+We will use a tiny table as the running example:
 
 
 | id | name  | age | country |
@@ -73,7 +75,7 @@ country: US, CA, US
 ```
 
 
-For this query:
+Now consider this query:
 
 
 ```sql
@@ -82,23 +84,18 @@ FROM users;
 ```
 
 
-a columnar format can focus on the `age` column. It does not need to read
-`id`, `name`, or `country` just to compute the average.
+With a columnar format, the reader only has to touch the `age` column. It does
+not need to read `id`, `name`, or `country` to compute the average.
 
 
-That is the first Parquet idea to keep:
-
-
-```text
-Parquet is useful to Trino because analytical queries often need some columns,
-not every column in every row.
-```
+This is the main reason Parquet suits Trino. Analytical queries usually need a
+few columns, not every column of every row.
 
 
 ## The Parquet File Layout
 
 
-A Parquet file has a nested layout:
+A Parquet file is organized as a nested structure:
 
 
 ```text
@@ -124,7 +121,7 @@ Parquet file
 ```
 
 
-The vocabulary:
+The terms used in the rest of this note:
 
 
 | Term            | Meaning                                                                    |
@@ -136,7 +133,7 @@ The vocabulary:
 | Footer metadata | File metadata, schema, row group metadata, column statistics, and offsets. |
 
 
-The two dimensions matter:
+Row groups and column chunks cut the data in two different directions:
 
 
 ```text
@@ -148,7 +145,7 @@ column chunk:
 ```
 
 
-That is why Parquet can support both:
+Because of that, Parquet supports two kinds of pruning:
 
 
 ```text
@@ -163,10 +160,8 @@ column pruning:
 ## Row Groups
 
 
-A row group is a batch of rows.
-
-
-For a file with one million rows, the layout might be:
+A row group is a batch of rows. A file with one million rows might be laid out
+like this:
 
 
 ```text
@@ -196,18 +191,15 @@ row group 2
 ```
 
 
-A row group is large enough to make metadata useful, but smaller than the whole
-file. That makes it a practical skipping boundary.
+A row group is large enough for its metadata to be useful, but smaller than the
+whole file, which makes it a practical boundary for skipping data.
 
 
 ## Row Group Skipping
 
 
-Parquet row groups often have statistics for columns. The most useful beginner
-example is min/max.
-
-
-Imagine the `age` column has these row group statistics:
+Parquet row groups often carry per-column statistics. The simplest example is
+min/max. Suppose the `age` column has these row group statistics:
 
 
 ```text
@@ -227,7 +219,7 @@ WHERE age > 50;
 ```
 
 
-Trino can reason:
+Trino can reason about each row group from the statistics alone:
 
 
 ```text
@@ -242,31 +234,20 @@ row group 3:
 ```
 
 
-This does not mean Parquet knows the final SQL answer. It means the reader can
-avoid work for row groups that cannot possibly produce matching rows.
+Parquet does not know the answer to the query. The statistics only let the
+reader avoid work for row groups that cannot produce matching rows. The proof
+only goes one way: statistics can show that no row in a row group can match, but
+they usually cannot show that every row matches.
 
 
-The useful distinction:
-
-
-```text
-statistics can prove "no rows here can match"
-
-statistics often cannot prove "all rows here match"
-```
-
-
-So Trino may still evaluate a filter after reading a row group that might
-contain matching rows.
+So after reading a row group that might contain matches, Trino may still need to
+evaluate the filter on its rows.
 
 
 ## Column Chunks And Parquet Pages
 
 
-A row group contains one column chunk per column.
-
-
-For this row group:
+A row group contains one column chunk per column. For this row group:
 
 
 ```text
@@ -298,26 +279,21 @@ country column chunk
 
 
 The row group is the larger pruning unit. The Parquet page is the smaller
-encoded/compressed storage unit inside a column chunk.
+encoded and compressed storage unit inside a column chunk.
 
 
-That matters because the word `page` will appear again in Trino. A Parquet page
-and a Trino `Page` are different things.
+Keep the word `page` in mind, because Trino uses it too. A Parquet page and a
+Trino `Page` are different things, and we will come back to that below.
 
 
 ## Encoding vs Compression
 
 
-Encoding and compression are related, but they are not the same.
+Encoding and compression are related but separate steps. Encoding changes how
+values are represented; compression then shrinks the encoded bytes.
 
 
-Encoding changes how values are represented.
-
-
-Compression shrinks the encoded bytes.
-
-
-The write-side shape is:
+On the write side:
 
 
 ```text
@@ -328,7 +304,7 @@ original values
 ```
 
 
-The read-side shape is:
+And on the read side, the same steps run in reverse:
 
 
 ```text
@@ -339,16 +315,13 @@ read compressed bytes
 ```
 
 
-Two common encoding ideas are dictionary encoding and run-length encoding.
+Two common encodings are dictionary encoding and run-length encoding.
 
 
 ## Dictionary Encoding
 
 
-Dictionary encoding is useful when a column has repeated values.
-
-
-Example:
+Dictionary encoding helps when a column has many repeated values, for example:
 
 
 ```text
@@ -363,7 +336,8 @@ US
 ```
 
 
-Instead of storing every string repeatedly, Parquet can store unique values:
+Instead of storing each string again and again, Parquet can store the unique
+values once:
 
 
 ```text
@@ -374,7 +348,7 @@ dictionary:
 ```
 
 
-Then the data can store ids:
+and then store ids in the data:
 
 
 ```text
@@ -382,15 +356,10 @@ Then the data can store ids:
 ```
 
 
-The compact shape is:
+The column is now stored as the dictionary values plus a list of integer ids.
 
 
-```text
-dictionary values + integer ids
-```
-
-
-This is useful for string-like columns with repeated values:
+This works well for string-like columns with a small set of repeated values:
 
 
 ```text
@@ -405,11 +374,8 @@ category
 ## Run-Length Encoding
 
 
-Run-length encoding, or RLE, is useful when the same value or same small id
-appears many times in a row.
-
-
-Example:
+Run-length encoding (RLE) helps when the same value, or the same small id,
+appears many times in a row. For example:
 
 
 ```text
@@ -437,11 +403,11 @@ ACTIVE x 3
 ```
 
 
-In Parquet, RLE is especially useful for compact streams of small integers,
-such as dictionary ids and the levels used for null or nested data.
+In Parquet, RLE is mostly used for compact streams of small integers, such as
+dictionary ids and the levels used for null or nested data.
 
 
-Dictionary encoding and RLE can work together:
+Dictionary encoding and RLE can be combined:
 
 
 ```text
@@ -471,18 +437,16 @@ RLE over ids:
 ```
 
 
-The important point is not the exact low-level encoding. The useful point is
-that Parquet can store repeated values compactly, and Trino can often preserve
-compact shapes while processing batches.
+The exact low-level encoding details matter less here than the general effect:
+Parquet can store repeated values compactly, and Trino can often keep those
+compact shapes while it processes batches.
 
 
 ## Nulls And Nested Data
 
 
-Parquet also needs to represent nulls and nested structures.
-
-
-For a nullable column:
+Parquet also has to represent nulls and nested structures. For a nullable
+column:
 
 
 ```text
@@ -493,7 +457,7 @@ Chris
 ```
 
 
-the file needs to distinguish:
+the file needs to record:
 
 
 ```text
@@ -503,16 +467,16 @@ position 2: value exists
 ```
 
 
-Parquet uses definition levels for this kind of information. A definition level
-is a small number that says how much of the value path exists.
+Parquet stores this as definition levels. A definition level is a small number
+that says how much of the value path exists.
 
 
-For repeated nested data, such as arrays and maps, Parquet also uses repetition
-levels. Repetition levels help describe whether a value starts a new parent row
-or continues a repeated field.
+For repeated nested data such as arrays and maps, Parquet also uses repetition
+levels, which describe whether a value starts a new parent row or continues a
+repeated field.
 
 
-The compact mental model:
+In short:
 
 
 ```text
@@ -524,14 +488,14 @@ repetition level:
 ```
 
 
-These levels are usually small repeated numbers, so they are good candidates for
-compact RLE and bit-packed encoding.
+These levels are usually small, repeated numbers, so they compress well with
+RLE and bit-packed encoding.
 
 
 ## How Trino Fits
 
 
-In Trino terms:
+Here are the Trino-side terms alongside the Parquet ones:
 
 
 ```text
@@ -558,7 +522,7 @@ Trino Page:
 ```
 
 
-The word `page` is overloaded:
+As mentioned earlier, `page` means two different things:
 
 
 ```text
@@ -570,7 +534,7 @@ Trino Page:
 ```
 
 
-They are related by the reader path, but they are not the same object.
+The reader turns one into the other, but they are not the same object:
 
 
 ```text
@@ -585,7 +549,7 @@ Parquet pages
 ## A Simple Trino Read Shape
 
 
-For this query:
+To make this concrete, take this query:
 
 
 ```sql
@@ -595,7 +559,7 @@ WHERE country = 'US';
 ```
 
 
-Trino mainly needs:
+Trino only needs two of the four columns:
 
 
 ```text
@@ -613,7 +577,7 @@ age:
 ```
 
 
-The scan flow is closer to:
+The scan flow looks roughly like this:
 
 
 ```text
@@ -631,7 +595,7 @@ SQL query
 ```
 
 
-For a dictionary-encoded `country` column, the file might contain:
+If `country` is dictionary-encoded, the file might contain:
 
 
 ```text
@@ -655,7 +619,7 @@ dictionary block:
 ```
 
 
-The filter can identify matching positions:
+The filter then works out which positions match:
 
 
 ```text
@@ -668,17 +632,13 @@ position 5: id 1 -> CA -> drop
 ```
 
 
-If the query also returns `name`, Trino uses those kept positions to keep the
-matching names from the `name` block.
+Since the query returns `name`, Trino uses those kept positions to select the
+matching values from the `name` block.
 
 
-Some operations can preserve compact block shapes. Other operations materialize
-new values. The important rule is:
-
-
-```text
-Trino works in columnar batches, not row-by-row objects.
-```
+Some operations can keep compact block shapes, while others materialize new
+values. Either way, the processing model is the same: Trino works on columnar
+batches, not on one row object at a time.
 
 
 ## A Footer Check From The Demo File
@@ -708,7 +668,7 @@ totalprice
 ```
 
 
-The useful footer facts:
+The main facts from the footer:
 
 
 | Fact                   | Observed value                      |
@@ -750,9 +710,9 @@ those row groups.
 | 4         | 55   | `totalprice`  | `DOUBLE`     | `1507.25` | `1898.75` | `ZSTD`      | `PLAIN, BIT_PACKED, RLE`            |
 
 
-The `orderstatus` line is a good concrete example for this note. It is a
-repeated string column with values like `F`, `O`, and `P`, and the footer shows
-dictionary-style encoding:
+The `orderstatus` rows line up with the dictionary encoding section above. It is
+a repeated string column with values like `F`, `O`, and `P`, and the footer
+shows dictionary-style encoding:
 
 
 ```text
@@ -766,7 +726,7 @@ stats_max_value: P
 
 
 The numeric columns show row-group min/max ranges. For `totalprice`, the first
-few row groups look like:
+few row groups look like this:
 
 
 | Row group | Min `totalprice` | Max `totalprice` |
@@ -778,7 +738,7 @@ few row groups look like:
 | 4         | `1507.25`        | `1898.75`        |
 
 
-That is the kind of metadata a reader can use for pruning. If a query asks for:
+A reader can use this metadata for pruning. Given the filter:
 
 
 ```sql
@@ -786,12 +746,12 @@ WHERE totalprice > 1000
 ```
 
 
-then the first two row groups cannot match based on their max value. Later row
-groups may match, so Trino still needs to read and evaluate rows from those
+the first two row groups cannot match, based on their max values. Later row
+groups may match, so Trino still has to read and evaluate rows from those
 groups.
 
 
-This is enough evidence for the post:
+Each concept from earlier in the note shows up somewhere in the export:
 
 
 ```text
@@ -825,10 +785,8 @@ catalog
 ```
 
 
-That chain chooses data files.
-
-
-Parquet starts after a selected data file is opened:
+That chain chooses data files. Parquet takes over once a selected data file is
+opened:
 
 
 ```text
@@ -840,7 +798,7 @@ Parquet file
 ```
 
 
-The layers are separate:
+Each layer skips or processes data at a different level:
 
 
 ```text
@@ -855,10 +813,9 @@ Trino execution:
 ```
 
 
-This distinction matters when reading `EXPLAIN` and `EXPLAIN ANALYZE`.
-`EXPLAIN` can show that a constraint reached the table scan. It does not, by
-itself, prove exactly how many Parquet row groups or pages were skipped at
-runtime.
+This matters when reading `EXPLAIN` and `EXPLAIN ANALYZE`. `EXPLAIN` can show
+that a constraint reached the table scan, but on its own it does not prove how
+many Parquet row groups or pages were skipped at runtime.
 
 
 For runtime proof, I need to combine:
@@ -879,24 +836,23 @@ Parquet/file-level evidence:
 ```
 
 
-That proof pattern belongs more naturally in the next read-trace note. This
-note is just the vocabulary needed before that trace.
+That proof pattern fits better in the next read-trace note. This note just sets
+up the vocabulary for it.
 
 
-## What To Remember
+## Summary
 
-- Parquet is columnar, so Trino can read useful columns instead of every column.
-- A Parquet file is organized into row groups, column chunks, and Parquet pages.
-- Row groups can carry statistics such as min/max values.
-- Row-group statistics can prove that a row group cannot match a predicate.
-- Column chunks let the reader avoid unneeded columns.
-- Parquet pages are encoded and compressed storage units.
-- Encoding changes representation; compression shrinks bytes.
-- Dictionary encoding and RLE help repeated values stay compact.
-- A Parquet page is not a Trino `Page`.
-- Trino `Page` objects are in-memory batches made of `Block` objects.
-- Iceberg metadata pruning and Parquet row-group/page pruning are different
-layers.
+Parquet is columnar, so Trino can read only the columns a query needs. A file is
+split into row groups, each row group into one column chunk per column, and each
+column chunk into encoded and compressed Parquet pages. Row-group min/max
+statistics can prove that a row group cannot match a predicate, but not that
+every row matches, so filters are still evaluated. Encoding changes how values
+are represented and compression shrinks the bytes; dictionary encoding and RLE
+keep repeated values compact. A Parquet page is not a Trino `Page`: the reader
+decodes Parquet pages into `Block` objects, which are grouped into in-memory
+`Page` batches for operators. Finally, Iceberg metadata pruning, which skips
+whole files, and Parquet row-group/page pruning, which skips data inside a
+file, are separate layers.
 
 ## Self-Check
 

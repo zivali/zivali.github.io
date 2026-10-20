@@ -16,7 +16,9 @@ authors:
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.2/dist/katex.min.css" integrity="sha384-bYdxxUwYipFNohQlHt0bjN/LCpueqWz13HufFEV1SUatKs1cm4L6fFgCi1jT643X" crossorigin="anonymous">
 
 
-The main rule:
+A distributed `EXPLAIN` plan in Trino is printed in the opposite order from the
+way data moves through it. Most of the confusion I had reading these plans came
+from that one fact:
 
 
 ```text
@@ -33,7 +35,7 @@ Fragment 0, then Fragment 1, then Fragment 2
 ```
 
 
-The better habit is:
+Instead, I read it like this:
 
 
 ```text
@@ -43,8 +45,8 @@ Read the plan from the source fragments back to the root.
 ```
 
 
-For this note, the example is a row-level Iceberg `DELETE`. It is more useful
-than a one-fragment read query because it shows a real distributed shape:
+The example in this note is a row-level Iceberg `DELETE`. It is more useful
+than a one-fragment read query because it has a real distributed shape:
 
 
 ```text
@@ -54,9 +56,9 @@ source scan
 ```
 
 
-The Iceberg details matter, but they are not the main lesson. The main lesson
-is how to read fragments, `RemoteSource`, `LocalExchange`, estimates, and
-runtime facts without mixing them together.
+The Iceberg details matter, but they are not the main point. The goal is to
+read fragments, `RemoteSource`, `LocalExchange`, estimates, and runtime facts
+without mixing them together.
 
 
 If I can read this delete plan, a normal `SELECT` plan should be easier. A
@@ -82,7 +84,7 @@ column, so this is the row-level delete path rather than a simple metadata
 delete.
 
 
-The plan shape can be summarized as:
+Trimmed down, the plan looks like this:
 
 
 ```text
@@ -105,7 +107,7 @@ Fragment 2 [SOURCE]
 ```
 
 
-Printed order:
+The fragments are printed in this order:
 
 
 ```text
@@ -115,7 +117,7 @@ Fragment 2
 ```
 
 
-Data-flow order:
+but data flows in this order:
 
 
 ```text
@@ -131,14 +133,10 @@ That reversal is the first thing to notice.
 ## Fragment Means Planned Distributed Work
 
 
-A fragment is one distributed section of the query plan. At runtime, it becomes
-stage work. That stage can run tasks, drivers, and operators.
-
-
-A fragment is not a file, a row group, a single worker or a single thread.
-
-
-It is a plan section with an input shape and an output shape.
+A fragment is one distributed section of the query plan. At runtime it becomes
+stage work, and that stage runs tasks, drivers, and operators. A fragment is
+not a file, a row group, a single worker, or a single thread. It is a plan
+section with an input shape and an output shape.
 
 
 Trino creates fragment boundaries when pages need to move between parts of the
@@ -149,7 +147,7 @@ plan. Common reasons include:
 - distributed writer output needs to be gathered for a final commit
 - final results need to be gathered for the client
 
-In this example:
+In this example, each fragment has one job:
 
 
 ```text
@@ -164,7 +162,7 @@ Fragment 0:
 ```
 
 
-The labels help:
+The bracketed labels on each fragment hint at that job:
 
 
 ```text
@@ -182,10 +180,8 @@ The labels help:
 ## RemoteSource Is The Fragment Bridge
 
 
-`RemoteSource` is the most important line when reading a distributed plan.
-
-
-This line:
+`RemoteSource` is the line I look for first in a distributed plan, because it
+is how one fragment refers to another. This line:
 
 
 ```text
@@ -201,7 +197,7 @@ the current fragment reads pages produced by fragment 2
 ```
 
 
-In the example:
+In the example, fragment 1 contains:
 
 
 ```text
@@ -209,10 +205,7 @@ Fragment 1 has RemoteSource[sourceFragmentIds = [2]]
 ```
 
 
-So fragment 1 depends on fragment 2.
-
-
-And:
+so fragment 1 depends on fragment 2. Fragment 0 contains:
 
 
 ```text
@@ -220,10 +213,8 @@ Fragment 0 has RemoteSource[sourceFragmentIds = [1]]
 ```
 
 
-So fragment 0 depends on fragment 1.
-
-
-That gives the actual dependency chain:
+so fragment 0 depends on fragment 1. Putting those together gives the actual
+dependency chain:
 
 
 ```text
@@ -233,7 +224,7 @@ Fragment 2
 ```
 
 
-This is the habit to keep:
+The routine that falls out of this is:
 
 
 ```text
@@ -245,20 +236,18 @@ This is the habit to keep:
 ```
 
 
-Fragment numbers are useful labels. They are not the execution story by
-themselves.
+Fragment numbers are useful labels, but on their own they don't tell you the
+execution order.
 
 
 ## LocalExchange Is Inside One Fragment
 
 
-`RemoteSource` crosses fragment boundaries.
+`RemoteSource` crosses fragment boundaries. `LocalExchange` reshapes pages
+inside a single fragment.
 
 
-`LocalExchange` reshapes pages inside a fragment.
-
-
-In fragment 0:
+Fragment 0 has:
 
 
 ```text
@@ -266,15 +255,13 @@ LocalExchange[partitioning = SINGLE]
 ```
 
 
-This gathers writer output into one stream before `TableCommit`.
+This gathers writer output into one stream before `TableCommit`. That makes
+sense because an Iceberg commit is a single metadata update. Workers can write
+data or delete artifacts in parallel, but the final table metadata commit
+should happen once.
 
 
-That makes sense because an Iceberg commit is a single metadata update. Workers
-can write data or delete artifacts in parallel, but the final table metadata
-commit should happen once.
-
-
-In fragment 1:
+Fragment 1 has a different one:
 
 
 ```text
@@ -296,7 +283,8 @@ LocalExchange:
 ```
 
 
-So when I see both together, I read them as two different movement layers:
+So when I see both in one fragment, I read them as two separate layers of page
+movement:
 
 
 ```text
@@ -311,7 +299,8 @@ LocalExchange:
 ## Start From The Source Fragment
 
 
-For this plan, the source fragment is:
+With the dependency chain in hand, we can walk the plan in data-flow order,
+starting with the source fragment:
 
 
 ```text
@@ -322,11 +311,8 @@ Fragment 2 [SOURCE]
 ```
 
 
-This is where table data enters the plan.
-
-
-`ScanFilterProject` tells me three things are fused together in the source
-work:
+This is where table data enters the plan. `ScanFilterProject` means three
+steps are fused together in the source work:
 
 
 ```text
@@ -353,7 +339,7 @@ field := $merge_row_id(...)
 ```
 
 
-The important ones here:
+Two of these matter most here:
 
 
 ```text
@@ -377,12 +363,12 @@ The `$merge_row_id` contains fields such as:
 ```
 
 
-That is the clue that this is not an in-place Parquet edit. Trino reads the
+This tells us the delete is not an in-place Parquet edit. Trino reads the
 matching row, carries the file and row-position identity forward, and lets the
 Iceberg write path commit delete metadata.
 
 
-For the purpose of reading `EXPLAIN`, the bigger point is:
+For reading `EXPLAIN`, what matters is the handoff to the next fragment:
 
 
 ```text
@@ -424,10 +410,8 @@ the columns needed by the writer
 ```
 
 
-It sends that information into the connector’s row-change write path.
-
-
-For Iceberg:
+and sends that information into the connector’s row-change write path. How
+Iceberg stores the result depends on the table format version:
 
 
 ```text
@@ -439,8 +423,8 @@ format v3:
 ```
 
 
-That storage detail belongs to the connector. From the Trino plan-reading
-angle, I only need this summary:
+That storage detail belongs to the connector. For reading the Trino plan, this
+summary is enough:
 
 
 ```text
@@ -465,7 +449,7 @@ Fragment 0 [COORDINATOR_ONLY]
 ```
 
 
-This fragment depends on fragment 1:
+Reading it bottom-up, it depends on fragment 1:
 
 
 ```text
@@ -473,7 +457,7 @@ RemoteSource[sourceFragmentIds = [1]]
 ```
 
 
-Then it gathers the writer output:
+gathers the writer output:
 
 
 ```text
@@ -481,7 +465,7 @@ LocalExchange[partitioning = SINGLE]
 ```
 
 
-Then it runs:
+and then runs:
 
 
 ```text
@@ -494,7 +478,7 @@ commit is a `RowDelta`. Iceberg records delete metadata in a new snapshot
 instead of modifying the original Parquet file in place.
 
 
-The useful write-query mental model:
+The mental model I use for write queries is:
 
 
 ```text
@@ -513,10 +497,8 @@ coordinator-only commit fragment.
 ## Estimates Are Not Runtime Facts
 
 
-`EXPLAIN` shows the planned shape. It does not read the data.
-
-
-Lines like this are planner estimates:
+`EXPLAIN` shows the planned shape. It does not read the data. Lines like this
+are planner estimates:
 
 
 ```text
@@ -524,11 +506,8 @@ Estimates: {rows: ..., cpu: ..., memory: ..., network: ...}
 ```
 
 
-They are useful for understanding what the optimizer thinks might happen, but
-they are not proof of actual work performed.
-
-
-The separation to remember:
+They show what the optimizer expects to happen, but they are not a record of
+work actually performed. The two commands answer different questions:
 
 
 ```text
@@ -553,7 +532,7 @@ Splits generation wait time
 ```
 
 
-So this line in a plan:
+So a line like this in a plan:
 
 
 ```text
@@ -561,10 +540,8 @@ TableScan[... constraint on [o_orderstatus]]
 ```
 
 
-means the planned scan has a connector constraint.
-
-
-It does not by itself prove:
+means the planned scan has a connector constraint. It does not by itself tell
+you:
 
 
 ```text
@@ -575,11 +552,8 @@ how many rows actually flowed through the operator
 ```
 
 
-Use `EXPLAIN` for plan shape. Use `EXPLAIN ANALYZE` for runtime evidence.
-
-
-For writes, be careful: `EXPLAIN ANALYZE` executes the write. It is not a dry
-run.
+Use `EXPLAIN` for plan shape and `EXPLAIN ANALYZE` for runtime evidence. For
+writes, be careful: `EXPLAIN ANALYZE` executes the write. It is not a dry run.
 
 
 ## Quick Translation Table
@@ -602,9 +576,9 @@ run.
 ## Common SELECT Operators
 
 
-The delete example is intentionally a harder plan because it includes a write
-path and a final commit. A normal `SELECT` plan usually uses the same reading
-routine, but the operators are more familiar:
+I picked the delete example on purpose because it is harder: it has a write
+path and a final commit. A normal `SELECT` plan is read the same way, but the
+operators are more familiar:
 
 
 | SELECT operator                    | How to read it                                                  |
@@ -624,7 +598,7 @@ routine, but the operators are more familiar:
 | `Output`                           | Final result symbols are returned to the client.                |
 
 
-So the comparison is:
+Side by side, the two shapes are:
 
 
 ```text
@@ -636,13 +610,14 @@ SELECT:
 ```
 
 
-The fragment-reading habit is the same. The write-specific operators disappear.
+The way you follow fragments is the same. Only the write-specific operators
+go away.
 
 
 ## The Reading Routine
 
 
-When I read a distributed `EXPLAIN`, I want to do this:
+When I read a distributed `EXPLAIN`, I go through these steps:
 
 
 ```text
@@ -658,7 +633,7 @@ When I read a distributed `EXPLAIN`, I want to do this:
 ```
 
 
-For the delete example, the compact reading is:
+Applied to the delete example, that gives:
 
 
 ```text
@@ -678,8 +653,8 @@ Fragment 0:
 ```
 
 
-That is the part worth remembering. The printed plan starts at fragment 0, but
-the data story starts at the source fragment.
+The printed plan starts at fragment 0, but the data starts at the source
+fragment. Following `RemoteSource` links is how you get from one to the other.
 
 
 ## Self-Check

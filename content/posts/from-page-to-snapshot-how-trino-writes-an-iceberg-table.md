@@ -18,11 +18,11 @@ authors:
 # From Page To Snapshot
 
 
-The write path is where Trino’s `Page` model turns into Iceberg files and
-Iceberg metadata.
+This post follows the write path, where Trino’s in-memory `Page` batches
+become Iceberg data files and Iceberg metadata.
 
 
-For CTAS (Create Table As Select) and INSERT, the compact mental model is:
+For CTAS (Create Table As Select) and INSERT, the short version is:
 
 
 ```text
@@ -31,13 +31,13 @@ coordinator commits Iceberg metadata
 ```
 
 
-That split matters. A write is not just “Trino creates a Parquet file.” Workers
-receive page batches, write data files through the connector page sink, and
-return small commit fragments. The coordinator gathers those fragments and asks
-Iceberg to commit a new snapshot.
+Writing a Parquet file is only half of the work. Workers receive page batches,
+write data files through the connector page sink, and return small commit
+fragments. The coordinator gathers those fragments and asks Iceberg to commit a
+new snapshot.
 
 
-The shape I want to remember is:
+End to end, the call path looks like this:
 
 
 ```text
@@ -53,13 +53,14 @@ upstream operators
 ```
 
 
-This note only covers the append-style write path: CTAS and INSERT.
+This post only covers the append-style write path: CTAS and INSERT. DELETE and
+MERGE are out of scope.
 
 
 ## The Setup
 
 
-Use a small Iceberg table so the write is easy to inspect:
+We will use a small Iceberg table so the write is easy to inspect:
 
 
 ```sql
@@ -96,7 +97,7 @@ FROM (
 ```
 
 
-This statement is useful because it is both:
+This statement is a good starting point because it does two things at once:
 
 
 ```text
@@ -108,14 +109,14 @@ AS SELECT:
 ```
 
 
-So CTAS is DDL plus a write query. It needs a table-create path and a data-write
-path.
+CTAS is DDL plus a write query, so it needs both a table-create path and a
+data-write path.
 
 
 ## The Plan Shape
 
 
-The useful distributed `EXPLAIN` shape for CTAS is roughly:
+The distributed `EXPLAIN` output for this CTAS looks roughly like this:
 
 
 ```text
@@ -133,8 +134,8 @@ Fragment 1 [SOURCE]
 ```
 
 
-The exact symbol names, fragment labels, and writer distribution can vary. The
-important operators are:
+The exact symbol names, fragment labels, and writer distribution can vary, but
+four operators carry the write:
 
 
 | Plan operator  | What it means                                                 |
@@ -159,9 +160,9 @@ Fragment 0
 ```
 
 
-That is the same fragment-reading habit as the
-EXPLAIN post:
-follow `RemoteSource`, not printed order.
+This is the same way of reading fragments as in the
+[EXPLAIN post]({{< relref "how-to-read-a-trino-distributed-explain-plan.md" >}}):
+follow `RemoteSource`, not the printed order.
 
 
 ## Phase 1: Workers Write Data Files
@@ -178,7 +179,7 @@ upstream operator output
 ```
 
 
-For this CTAS, the upstream operator is simple:
+In our CTAS, the upstream operator is just `Values`:
 
 
 ```text
@@ -187,7 +188,7 @@ ValuesOperator
 ```
 
 
-For a CTAS from another table, the upstream side could be a scan:
+A CTAS that reads from another table would start with a scan instead:
 
 
 ```text
@@ -197,12 +198,12 @@ TableScanOperator
 ```
 
 
-For a more complex `INSERT SELECT`, the upstream side could include joins,
-aggregations, exchanges, or sorts. The writer does not care where the page came
-from. It receives a `Page` batch and passes the rows to the connector sink.
+A more complex `INSERT SELECT` could put joins, aggregations, exchanges, or sorts
+upstream. The writer does not care where the page came from. It receives a
+`Page` batch and passes the rows to the connector sink.
 
 
-The connector handoff is:
+From there, the writer hands off to the connector:
 
 
 ```text
@@ -213,8 +214,8 @@ TableWriterOperator
 ```
 
 
-At this point, Trino is crossing from engine execution into the Iceberg
-connector’s writer.
+This is where execution leaves the engine and enters the Iceberg connector’s
+writer.
 
 
 ## What `IcebergPageSink` Does
@@ -224,11 +225,8 @@ connector’s writer.
 Iceberg data files.
 
 
-A `Page` is not a file. It is an in-memory batch of rows in Trino’s columnar
-`Block` format.
-
-
-The page sink has to turn those pages into file output:
+A `Page` is an in-memory batch of rows in Trino’s columnar `Block` format, so
+the page sink has to turn those pages into file output:
 
 
 ```text
@@ -240,7 +238,7 @@ incoming Page
 ```
 
 
-For the CTAS table:
+Our table is partitioned:
 
 
 ```text
@@ -248,12 +246,12 @@ partitioning = ARRAY['orderstatus']
 ```
 
 
-the sink may write rows into different partition outputs. The physical file
-names and counts are not the lesson. The lesson is that worker tasks write data
+so the sink may write rows into different partition outputs. The exact file
+names and counts don't matter here. What matters is that worker tasks write data
 files before the coordinator commits the table metadata.
 
 
-When worker-side writing finishes:
+When worker-side writing finishes, the sink closes its writers:
 
 
 ```text
@@ -263,8 +261,8 @@ IcebergPageSink.finish()
 ```
 
 
-Those fragments are small receipts. They describe written files. They are not
-the table snapshot by themselves.
+Those fragments are small receipts that describe the written files. On their
+own, they do not change the table snapshot.
 
 
 ## Phase 2: Coordinator Commits Metadata
@@ -304,12 +302,9 @@ TableFinishOperator
 ```
 
 
-For CTAS with rows, the create-table finish path still has to commit the data
-files. The Iceberg side turns worker fragments into `DataFile` records and
-commits an append-style snapshot.
-
-
-Conceptually:
+Because this CTAS produces rows, the create-table finish path also has to commit
+the data files. The Iceberg side turns worker fragments into `DataFile` records
+and commits an append-style snapshot:
 
 
 ```text
@@ -321,15 +316,15 @@ commit fragments
 ```
 
 
-This is the part that makes Iceberg different from “write some files under a
-directory.” The table state is the committed snapshot. The data files become
-visible because the snapshot metadata points to them.
+This step is what separates an Iceberg write from writing files under a
+directory. The table state is the committed snapshot, and the data files become
+visible only because the snapshot metadata points to them.
 
 
 ## INSERT Reuses The Same Shape
 
 
-After CTAS, append more rows:
+Once the table exists, we can append more rows:
 
 
 ```sql
@@ -340,10 +335,8 @@ VALUES
 ```
 
 
-INSERT is simpler than CTAS because the table already exists.
-
-
-The begin path changes:
+INSERT is simpler than CTAS because the table already exists. The first
+difference is the begin path:
 
 
 ```text
@@ -357,7 +350,7 @@ INSERT:
 ```
 
 
-But the worker write model is the same:
+The worker side is the same as before:
 
 
 ```text
@@ -369,7 +362,7 @@ upstream pages
 ```
 
 
-The coordinator finish route changes:
+On the coordinator, the finish method differs:
 
 
 ```text
@@ -381,7 +374,7 @@ INSERT:
 ```
 
 
-The Iceberg commit concept is still append-style:
+and the Iceberg commit is still an append:
 
 
 ```text
@@ -391,14 +384,15 @@ new data files
 ```
 
 
-So INSERT is not a special row-by-row mutation. It writes new files and commits
-new metadata that makes those files part of the current table snapshot.
+INSERT does not modify existing rows. It writes new files and commits new
+metadata that makes those files part of the current table snapshot.
 
 
 ## What To Check In Iceberg
 
 
-After CTAS, check that the table exists:
+Iceberg's metadata tables let us confirm each step. After CTAS, check that the
+table exists:
 
 
 ```sql
@@ -406,7 +400,7 @@ SHOW CREATE TABLE iceberg.write_trace.orders_delta;
 ```
 
 
-Check snapshots:
+Then look at the snapshots:
 
 
 ```sql
@@ -421,10 +415,11 @@ ORDER BY committed_at;
 ```
 
 
-After CTAS, one snapshot should be there for the initial append. After INSERT, there should be another snapshot.
+After CTAS, there should be one snapshot for the initial append. After INSERT,
+there should be another.
 
 
-Check current files:
+Finally, list the current files:
 
 
 ```sql
@@ -439,7 +434,7 @@ ORDER BY content, file_path;
 ```
 
 
-For this narrow post, the important check is:
+For the scope of this post, these are the checks that matter:
 
 
 ```text
@@ -457,7 +452,7 @@ INSERT:
 ## What The Evidence Proves
 
 
-The evidence types prove different things:
+Each of these sources tells us something different:
 
 
 | Evidence          | What it proves                                                 |
@@ -468,15 +463,15 @@ The evidence types prove different things:
 | `$files`          | Current snapshot points to data files.                         |
 
 
-For a read query, `EXPLAIN ANALYZE` reads data and reports runtime stats. For a
-CTAS or INSERT, it runs the write. Use it only when writing to a disposable
-trace table.
+Be careful with `EXPLAIN ANALYZE`. For a read query, it reads data and reports
+runtime stats. For a CTAS or INSERT, it actually runs the write, so only use it
+against a disposable trace table.
 
 
 ## Code Anchors
 
 
-These are the source areas to inspect after the plan shape makes sense:
+Once the plan shape makes sense, these are the source files to read:
 
 
 | Concept                               | Code area                                                                                 |
@@ -493,7 +488,7 @@ These are the source areas to inspect after the plan shape makes sense:
 | Worker file-write receipt             | `plugin/trino-iceberg/src/main/java/io/trino/plugin/iceberg/CommitTaskData.java`          |
 
 
-The useful first debugger path is:
+If you want to step through it in a debugger, a good first set of breakpoints is:
 
 
 ```text
@@ -507,8 +502,8 @@ BeginTableWrite
 ```
 
 
-That path is enough to understand CTAS and INSERT. It is not enough for DELETE
-or MERGE, because row-level changes use a merge sink and `RowDelta` commit.
+That path covers CTAS and INSERT. DELETE and MERGE need more, because row-level
+changes go through a merge sink and a `RowDelta` commit.
 
 
 ## CTAS vs INSERT
@@ -520,7 +515,7 @@ or MERGE, because row-level changes use a merge sink and `RowDelta` commit.
 | INSERT    | table already exists     | `beginInsert(...)`      | write new data files | commit files into existing table | append snapshot for existing table |
 
 
-The shared part is larger than the different part:
+Most of the path is shared:
 
 
 ```text
@@ -532,15 +527,15 @@ both make data visible through Iceberg snapshot metadata
 ```
 
 
-## What To Remember
+## Summary
 
-- CTAS is create-table plus write-data.
-- INSERT reuses the same append-style write model against an existing table.
-- Workers write physical data files through `IcebergPageSink`.
-- Workers return commit fragments, not final table metadata.
-- The coordinator commits those fragments into Iceberg snapshot and manifest
-metadata.
-- The durable Iceberg table state is the snapshot, not just the files sitting in
-storage.
-- DELETE and MERGE are harder because they are row-change writes. CTAS and
-INSERT are the simpler foundation.
+CTAS is a create-table step plus a data write, and INSERT reuses the same
+append-style write against an existing table. In both cases, workers write the
+physical data files through `IcebergPageSink` and return commit fragments
+rather than table metadata. The coordinator then commits those fragments as a
+new Iceberg snapshot with its manifest metadata. The durable table state is
+that snapshot; files sitting in storage are not part of the table until a
+snapshot points to them.
+
+DELETE and MERGE are harder because they change existing rows. CTAS and INSERT
+are the simpler foundation to understand first.

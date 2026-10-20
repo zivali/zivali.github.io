@@ -17,19 +17,14 @@ authors:
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.2/dist/katex.min.css" integrity="sha384-bYdxxUwYipFNohQlHt0bjN/LCpueqWz13HufFEV1SUatKs1cm4L6fFgCi1jT643X" crossorigin="anonymous">
 
 
-The easy mistake is to look inside an Iceberg table directory, see `.avro`
-files under `metadata/`, and assume the table data is Avro.
-
-
-That is not the right mental model.
+If you look inside an Iceberg table directory and see `.avro` files under
+`metadata/`, it is easy to assume the table data is Avro. It usually is not.
 
 
 Iceberg is the table format. Parquet, ORC, and Avro are file formats that an
 Iceberg table can point to. In a common Trino lakehouse table, Iceberg metadata
 uses JSON and Avro files, while the actual table rows live in Parquet files.
-
-
-The distinction I want to keep straight is:
+This post walks through one small table to keep those roles apart:
 
 
 ```text
@@ -47,7 +42,7 @@ data/*.parquet:
 ## The Small Example
 
 
-Start with an Iceberg table written as Parquet:
+We start with an Iceberg table written as Parquet:
 
 
 ```sql
@@ -69,7 +64,7 @@ iceberg.tpch.orders
 ```
 
 
-That means:
+which breaks down as:
 
 
 ```text
@@ -108,7 +103,7 @@ orders/
 ```
 
 
-The important reading:
+The two directories have different purposes:
 
 
 ```text
@@ -120,18 +115,16 @@ data/:
 ```
 
 
-So the presence of Avro under `metadata/` does not mean the table rows are Avro.
-It means Iceberg is using Avro for manifest metadata.
+Avro under `metadata/` does not mean the table rows are Avro. It means Iceberg
+is using Avro for manifest metadata.
 
 
 ## The Metadata Chain
 
 
 An Iceberg read does not scan every file under the table directory and guess
-which ones are current.
-
-
-It starts from a metadata pointer and walks a snapshot chain:
+which ones are current. It starts from a metadata pointer and walks a snapshot
+chain:
 
 
 ![](/images/notion/37feb5150bfd80f59fa8cbafb4a9acdf/image-37feb515-0bfd-80be-a2fc-f484196175b3.png)
@@ -159,7 +152,7 @@ Each layer has a separate job:
 | Data file       | `data/.../*.parquet`                                | Stores actual table rows.                                                             |
 
 
-This is why Iceberg can support snapshots and time travel. A query reads the
+This chain is what makes snapshots and time travel possible. A query reads the
 files for one selected snapshot, not every file that happens to still exist in
 the table directory.
 
@@ -167,10 +160,7 @@ the table directory.
 ## Metadata JSON
 
 
-The table metadata JSON is the table-level file.
-
-
-It stores facts such as:
+The table metadata JSON is the table-level file. It stores facts such as:
 
 
 ```text
@@ -183,11 +173,8 @@ metadata file history
 ```
 
 
-The current snapshot id is the bridge from table-level metadata to the list of
-data files that are visible to a query.
-
-
-Example shape:
+The current snapshot id connects table-level metadata to the list of data files
+that are visible to a query. A simplified example:
 
 
 ```text
@@ -199,7 +186,7 @@ Example shape:
 ```
 
 
-The exact JSON is more detailed, but this is the useful reading habit:
+The real JSON has more detail, but this is the order I read it in:
 
 
 ```text
@@ -216,10 +203,7 @@ The two Avro metadata layers are easy to blur together.
 
 
 A manifest list is snapshot-level metadata. It tells Iceberg which manifest
-files belong to a snapshot.
-
-
-Example:
+files belong to a snapshot. For our table:
 
 
 ```text
@@ -236,11 +220,8 @@ contains:
 ```
 
 
-A manifest file is data-file metadata. It lists actual data files and includes
-facts that can help pruning.
-
-
-Example:
+A manifest file is data-file metadata. It lists actual data files along with
+facts that can help pruning:
 
 
 ```text
@@ -267,7 +248,7 @@ contains:
 ```
 
 
-The compact distinction:
+In short:
 
 
 ```text
@@ -283,13 +264,7 @@ manifest file:
 
 
 Iceberg tables are snapshot-based. A write does not mutate one metadata file in
-place.
-
-
-It writes new metadata and then updates the catalog pointer.
-
-
-Example:
+place. It writes new metadata and then updates the catalog pointer:
 
 
 ```text
@@ -311,8 +286,8 @@ audit and debugging
 ```
 
 
-Cleanup is a maintenance concern. Old metadata and orphan files are not removed
-just because a newer snapshot exists.
+Cleanup is a separate maintenance task. Old metadata and orphan files are not
+removed just because a newer snapshot exists.
 
 
 ## Why The Metadata Is Avro
@@ -330,7 +305,7 @@ Avro:
 ```
 
 
-The table data uses the configured data-file format:
+The table data uses whichever data-file format is configured:
 
 
 ```text
@@ -350,7 +325,7 @@ data/file_001.parquet
 ```
 
 
-The `.avro` files are metadata. The `.parquet` file is row data.
+The `.avro` files are metadata, and the `.parquet` file is row data.
 
 
 Avro can also be used as a data-file format, but that is a separate choice:
@@ -365,7 +340,7 @@ data/file_001.avro:
 ```
 
 
-The matrix:
+Putting the formats side by side:
 
 
 | Format  | Iceberg core metadata?            | Iceberg table data?                 |
@@ -379,7 +354,7 @@ The matrix:
 ## How This Helps Query Pruning
 
 
-For a query like:
+Consider this query:
 
 
 ```sql
@@ -390,10 +365,8 @@ WHERE o_orderstatus = 'F'
 ```
 
 
-Iceberg can use metadata before opening data files.
-
-
-At the manifest-list layer:
+Iceberg can use metadata to rule out files before opening any of them. At the
+manifest-list layer:
 
 
 ```text
@@ -411,13 +384,8 @@ keep file_001.parquet because max(o_totalprice) = 9500
 ```
 
 
-That is Iceberg metadata pruning.
-
-
-It is not the same as Parquet row-group pruning.
-
-
-The layers are:
+That is Iceberg metadata pruning, and it is not the same as Parquet row-group
+pruning. The layers are:
 
 
 ```text
@@ -432,7 +400,7 @@ Trino engine:
 ```
 
 
-This distinction matters for later posts. When `EXPLAIN` shows a pushed
+This distinction comes up again in later posts. When `EXPLAIN` shows a pushed
 constraint, that does not automatically mean the connector fully filtered every
 row by itself. It may mean the connector used metadata for pruning while Trino
 still kept a remaining filter for correctness.
@@ -442,10 +410,7 @@ still kept a remaining filter for correctness.
 
 
 For Trino analytics, Parquet is usually a better Iceberg data-file format than
-Avro.
-
-
-Parquet is columnar:
+Avro. Parquet is columnar, which lets the reader:
 
 
 ```text
@@ -466,15 +431,13 @@ usually fewer inner-file pruning opportunities
 ```
 
 
-The reason to choose Parquet is not that Iceberg metadata becomes Parquet. The
-manifest metadata is still Iceberg metadata, commonly Avro.
+Choosing Parquet does not change the metadata. The manifests are still Iceberg
+metadata, commonly Avro. The benefit comes after Iceberg selects candidate data
+files: the Parquet reader then has a columnar file layout and richer internal
+metadata to work with.
 
 
-The reason is that after Iceberg selects candidate data files, the Parquet
-reader has a columnar file layout and richer internal metadata to work with.
-
-
-The practical rule:
+The rule I follow:
 
 
 ```text
@@ -487,10 +450,10 @@ Use Avro data files only for a specific compatibility or write-path reason.
 ## Trino Inspection Queries
 
 
-These queries are the fastest way to check the distinction from Trino.
+These queries are the quickest way to check all of this from Trino.
 
 
-Show table properties, including the data-file format:
+Table properties, including the data-file format:
 
 
 ```sql
@@ -499,7 +462,7 @@ FROM iceberg.tpch."orders$properties";
 ```
 
 
-Show metadata JSON history:
+Metadata JSON history:
 
 
 ```sql
@@ -509,7 +472,7 @@ ORDER BY timestamp DESC;
 ```
 
 
-Show snapshots and their manifest-list Avro files:
+Snapshots and their manifest-list Avro files:
 
 
 ```sql
@@ -518,7 +481,7 @@ FROM iceberg.tpch."orders$snapshots";
 ```
 
 
-Show manifest files:
+Manifest files:
 
 
 ```sql
@@ -527,7 +490,7 @@ FROM iceberg.tpch."orders$manifests";
 ```
 
 
-Show actual data files and their formats:
+Actual data files and their formats:
 
 
 ```sql
@@ -551,7 +514,7 @@ orders$files.file_format:
 ## Going forward
 
 
-The next post will go deeper into Parquet itself:
+The next post goes deeper into Parquet itself:
 
 
 ```text
@@ -564,7 +527,7 @@ footer statistics
 ```
 
 
-Then the read-trace post can connect the layers:
+After that, the read-trace post connects the layers:
 
 
 ```text
@@ -579,16 +542,16 @@ SQL
 
 ## What To Remember
 
-- Iceberg is a table format, not a data-file encoding.
-- Parquet, ORC, and Avro are data-file formats Iceberg can reference.
-- Iceberg table metadata starts from a catalog pointer and a metadata JSON
-file.
-- Iceberg snapshots point to manifest-list Avro files.
-- Manifest files list data files and carry file-level metrics.
-- Seeing `.avro` under `metadata/` does not mean the table rows are Avro.
-- For Trino analytics, Parquet is usually the practical default data format.
-- Iceberg metadata pruning and Parquet row-group/page pruning are separate
-layers.
+Iceberg is a table format, not a data-file encoding; Parquet, ORC, and Avro are
+the data-file formats it can reference. A read starts from a catalog pointer
+and a metadata JSON file, which selects a snapshot. The snapshot points to a
+manifest-list Avro file, and manifest files list the data files along with
+file-level metrics. That is why `.avro` files under `metadata/` say nothing
+about the format of the table rows.
+
+For Trino analytics, Parquet is usually the practical default data format.
+Iceberg metadata pruning and Parquet row-group/page pruning are separate
+layers, and the engine may still apply a remaining filter on top of both.
 
 ## Self-Check
 
