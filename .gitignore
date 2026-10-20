@@ -4,7 +4,5 @@ dist
 resources
 .hugo_build.lock
 public
-content
-static/images/notion
 .idea
 .superpowers/
