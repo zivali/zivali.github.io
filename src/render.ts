@@ -7,6 +7,7 @@ import {
 } from "@notionhq/client";
 import {
   EquationBlockObjectResponse,
+  GetBlockResponse,
   GetPageResponse,
   PageObjectResponse,
 } from "@notionhq/client/build/src/api-endpoints";
@@ -15,6 +16,7 @@ import YAML from "yaml";
 import { sh } from "./sh";
 import { DatabaseMount, loadConfig, PageMount } from "./config";
 import { getPageTitle, getCoverLink, getFileName } from "./helpers";
+import { downloadNotionAsset } from "./assets";
 import katex from "katex";
 import { MdBlock } from "@pclouddev/notion-to-markdown/build/types";
 import path from "path";
@@ -45,6 +47,19 @@ export async function renderPage(page: PageObjectResponse, notion: Client) {
   formatterConfig.equation.style
 
   const n2m = new NotionToMarkdown({ notionClient: notion });
+  n2m.setCustomTransformer("image", async (block) => {
+    const imageBlock = block as Extract<GetBlockResponse, { type: "image" }>;
+    const caption = imageBlock.image.caption.map((item) => item.plain_text).join("");
+    if (imageBlock.image.type === "external") {
+      return `![${caption}](${imageBlock.image.external.url})`;
+    }
+    const localPath = await downloadNotionAsset(
+      imageBlock.image.file.url,
+      page.id,
+      `image-${imageBlock.id}`
+    );
+    return `![${caption}](${localPath})`;
+  });
   let frontInjectString = ''
 
   switch (formatterConfig.equation.style) {
@@ -96,8 +111,10 @@ export async function renderPage(page: PageObjectResponse, notion: Client) {
   // set featuredImage
   const featuredImageLink = await getCoverLink(page.id, notion);
   if (featuredImageLink) {
-    const { link, expiry_time } = featuredImageLink;
-    frontMatter.featuredImage = link;
+    const { link, expiry_time, type } = featuredImageLink;
+    frontMatter.featuredImage = type === "file"
+      ? await downloadNotionAsset(link, page.id, "cover")
+      : link;
     // update nearest_expiry_time
     if (expiry_time) {
       if (nearest_expiry_time) {

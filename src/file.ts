@@ -56,7 +56,7 @@ export function getAllContentFiles(
         filename: path.basename(filepath),
         filepath,
         metadata,
-        expiry_time: (filedata.attributes as any).expiry_time
+        expiry_time: (filedata.attributes as any).EXPIRY_TIME
       })
     } else {
       console.warn(`[Warn] ${filepath} does not have NOTION_METADATA in its front matter, it will not be managed.`)
