@@ -18,12 +18,12 @@ authors:
 # How Trino Executes Iceberg MERGE
 
 
-`MERGE` is where the previous two write notes meet:
+`MERGE` combines the two write paths covered in the previous notes in this series:
 
 - From Page To Snapshot: How Trino Writes An Iceberg Table
 - How Trino Executes Iceberg DELETE Without Editing Parquet Rows In Place
 
-The CTAS and INSERT note showed the append path:
+The CTAS and INSERT note followed the append path:
 
 
 ```text
@@ -33,7 +33,7 @@ write new data files
 ```
 
 
-The DELETE note showed the row-level delete path:
+The DELETE note followed the row-level delete path:
 
 
 ```text
@@ -43,13 +43,13 @@ read existing row identity
 ```
 
 
-`MERGE` combines both ideas. It can insert new rows, delete old rows, and update
-existing rows. For Iceberg, an update is not an in-place Parquet edit. It is
-stored as delete metadata for the old row plus new data-file work for the new
-row values.
+A `MERGE` can insert new rows, delete old rows, and update existing rows, so it
+needs both. In Iceberg, an update is not an in-place Parquet edit. It is stored
+as delete metadata for the old row plus new data-file work for the new row
+values.
 
 
-The short version is:
+In one line:
 
 
 ```text
@@ -57,10 +57,10 @@ MERGE is read, classify, write, and commit.
 ```
 
 
-Trino first reads the source and target rows, decides which `WHEN` branch each
-joined row should take, converts those SQL actions into physical row-change
-rows, writes inserts and deletes through the connector, then commits one
-Iceberg `RowDelta`.
+Trino reads the source and target rows, decides which `WHEN` branch each joined
+row takes, converts those SQL actions into physical row-change rows, writes the
+inserts and deletes through the connector, and then commits one Iceberg
+`RowDelta`.
 
 
 The shape I want to remember is:
@@ -81,14 +81,14 @@ MERGE SQL
 ```
 
 
-So this post is not a general introduction to writes. It is the row-change
-trace after the CTAS/INSERT append path and the Iceberg DELETE row-change path.
+This post assumes the earlier notes and follows the row-change trace from there,
+rather than introducing writes from scratch.
 
 
-## The Small Example
+## The Example
 
 
-Start with an Iceberg table that already has a few rows:
+We start with an Iceberg table that already has a few rows:
 
 
 ```sql
@@ -113,7 +113,7 @@ FROM (
 ```
 
 
-Then run a `MERGE` with one matched update and one not-matched insert:
+Then we run a `MERGE` with one matched update and one not-matched insert:
 
 
 ```sql
@@ -130,7 +130,7 @@ VALUES (s.orderkey, s.custkey, s.orderstatus, s.totalprice);
 ```
 
 
-The intended result:
+The intended result is:
 
 
 | Source row     | Target match? | SQL action                       |
@@ -139,7 +139,7 @@ The intended result:
 | `orderkey = 7` | no            | insert a new row                 |
 
 
-This is a good trace because it exercises both sides of the row-change writer:
+These two rows exercise both sides of the row-change writer:
 
 
 ```text
@@ -152,10 +152,10 @@ not-matched INSERT:
 ```
 
 
-For Iceberg, neither side means “edit an existing Parquet row in place.”
+In neither case does Iceberg edit an existing Parquet row in place.
 
 
-The update case is the key connection to the DELETE note:
+The update is where this connects to the DELETE note:
 
 
 ```text
@@ -165,7 +165,7 @@ UPDATE orderkey = 3
 ```
 
 
-The insert case is the key connection to the CTAS/INSERT note:
+The insert is where it connects to the CTAS/INSERT note:
 
 
 ```text
@@ -177,7 +177,7 @@ INSERT orderkey = 7
 ## The Plan Shape
 
 
-The useful distributed `EXPLAIN` shape is:
+Here is the relevant part of the distributed `EXPLAIN` output:
 
 
 ```text
@@ -223,13 +223,10 @@ Fragment 4 [SOURCE]
 ```
 
 
-Trino prints the root fragment first. That is not the best reading order.
-This is the same habit as the
-EXPLAIN post:
-follow `RemoteSource`, not printed order.
-
-
-Read the `RemoteSource` chain:
+Trino prints the root fragment first, which is not the most useful reading
+order. As in the
+[EXPLAIN post]({{< relref "how-to-read-a-trino-distributed-explain-plan.md" >}}),
+we follow the `RemoteSource` links instead of the printed order:
 
 
 ```text
@@ -241,7 +238,7 @@ Fragment 4 scans the target table.
 ```
 
 
-So the data flow is:
+Read bottom-up, the data flow is:
 
 
 ```text
@@ -265,11 +262,16 @@ Fragment 0
 ```
 
 
-4 reads target, 3 compares source vs target and decides MERGE branch, 2 prepares validated row-change records, 1 writes them through MergeWriter, 0 commits the Iceberg snapshot/metadata.
+Fragment 4 reads the target, Fragment 3 compares source with target and picks
+the `MERGE` branch, Fragment 2 prepares validated row-change records, Fragment 1
+writes them through `MergeWriter`, and Fragment 0 commits the Iceberg snapshot
+and metadata. The rest of the post walks through the fragments in that order.
+
+
 ## Fragment 4: Read Target Rows
 
 
-The target scan is the bottom of the table side:
+The target scan sits at the bottom of the table side:
 
 
 ```text
@@ -280,11 +282,11 @@ Fragment 4 [SOURCE]
 ```
 
 
-The source values contain `orderkey = 3` and `orderkey = 7`, so Trino only needs
-target rows that can match those keys.
+The source values contain only `orderkey = 3` and `orderkey = 7`, so Trino only
+needs target rows that can match those keys.
 
 
-The important hidden column is:
+The scan also produces a hidden column:
 
 
 ```text
@@ -292,7 +294,7 @@ field := $merge_row_id(...)
 ```
 
 
-For Iceberg, this row id includes the old row’s file and position:
+For Iceberg, this row id includes the old row's file and position:
 
 
 ```text
@@ -304,8 +306,8 @@ For Iceberg, this row id includes the old row’s file and position:
 ```
 
 
-That row id is the handle for deleting the old physical row later. It is the
-evidence that the row-level write path needs more than normal table columns.
+This row id is what later lets the connector delete the old physical row, and it
+is why the row-level write path needs more than the normal table columns.
 
 
 Fragment 4 also adds:
@@ -317,8 +319,8 @@ present := true
 ```
 
 
-`present` means “there was a target row.” Later, when `present IS NULL`, the
-source row did not match a target row and takes the insert branch.
+`present` marks that a target row exists. Later, when `present IS NULL`, the
+source row did not match any target row and takes the insert branch.
 
 
 ## Fragment 3: Join Source And Target
@@ -334,7 +336,7 @@ Values[]
 ```
 
 
-Then it joins them to the target rows:
+and joins them to the target rows:
 
 
 ```text
@@ -346,7 +348,7 @@ Here `field_0` is the source `orderkey`. The target side contributes the target
 columns, the row id, `target_unique_id`, and `present`.
 
 
-The key output is:
+The output we care about is `merge_row`:
 
 
 ```text
@@ -354,10 +356,8 @@ merge_row := CASE
 ```
 
 
-`merge_row` is the packed SQL-level row-change instruction.
-
-
-In this plan:
+`merge_row` packs the SQL-level row-change instruction into one value. In this
+plan it is built as:
 
 
 ```text
@@ -366,7 +366,7 @@ WHEN present IS NULL THEN ROW(..., tinyint '1', integer '1')
 ```
 
 
-The operation numbers at this point are SQL `MERGE` branch meanings:
+At this stage, the operation numbers still carry SQL `MERGE` branch meanings:
 
 
 | Operation number | SQL meaning |
@@ -376,7 +376,7 @@ The operation numbers at this point are SQL `MERGE` branch meanings:
 | `3`              | `UPDATE`    |
 
 
-For this query:
+For our query that gives:
 
 
 ```text
@@ -388,7 +388,7 @@ source orderkey = 7 did not match target row
 ```
 
 
-Fragment 3 also creates:
+Fragment 3 also creates two more symbols:
 
 
 ```text
@@ -397,18 +397,18 @@ unique_id := COALESCE(target_unique_id, source_unique_id)
 ```
 
 
-Those symbols support the duplicate-match check in the next fragment. Fragment 3
-creates the values, but it does not run `MarkDistinct` itself.
+These feed the duplicate-match check in the next fragment. Fragment 3 creates
+the values but does not run `MarkDistinct` itself.
 
 
 ## Fragment 2: Check And Classify
 
 
-Fragment 2 is where the plan changes from SQL `MERGE` meaning to physical
+Fragment 2 is where the plan moves from SQL `MERGE` semantics to physical
 row-change rows.
 
 
-The first part is the duplicate-match check:
+It starts with the duplicate-match check:
 
 
 ```text
@@ -421,7 +421,7 @@ Filter[
 ```
 
 
-This protects the SQL rule that one target table row cannot be modified by more
+This enforces the SQL rule that a target table row cannot be modified by more
 than one source row.
 
 
@@ -437,7 +437,7 @@ MergeProcessor[]
 ```
 
 
-The important distinction:
+The two fragments answer different questions:
 
 
 ```text
@@ -449,7 +449,7 @@ Fragment 2:
 ```
 
 
-For this Iceberg path, a logical update becomes delete plus insert:
+On this Iceberg path, a logical update becomes a delete plus an insert:
 
 
 ```text
@@ -468,8 +468,8 @@ SQL INSERT
 ```
 
 
-That is why the output from Fragment 2 has both table data columns and control
-columns:
+As a result, the output of Fragment 2 carries both table data columns and
+control columns:
 
 
 ```text
@@ -478,10 +478,10 @@ columns:
 ```
 
 
-`field` carries the old target row id for deletes. The data columns carry values
-for new inserted rows. `insert_from_update` is bookkeeping so an update that
-physically becomes one delete row plus one insert row can still be counted as
-one SQL update.
+`field` carries the old target row id for deletes, and the data columns carry
+the values for newly inserted rows. `insert_from_update` is bookkeeping: an
+update physically becomes one delete row plus one insert row, and this flag lets
+it still be counted as one SQL update.
 
 
 ## Fragment 1: Write Inserts And Deletes
@@ -496,7 +496,7 @@ Fragment 1 [MERGE [insert = HASH]]
 ```
 
 
-It receives already-classified rows from Fragment 2:
+It receives the already-classified rows from Fragment 2:
 
 
 ```text
@@ -504,7 +504,7 @@ RemoteSource[sourceFragmentIds = [2]]
 ```
 
 
-Then it arranges them for the merge writer:
+and arranges them for the merge writer:
 
 
 ```text
@@ -514,7 +514,7 @@ LocalExchange[
 ```
 
 
-This line can look confusing:
+The partitioning label is easy to misread:
 
 
 ```text
@@ -522,17 +522,17 @@ MERGE [insert = HASH]
 ```
 
 
-It does not mean the SQL statement is only inserting. It means insert-like rows
-are hash-partitioned by the insert layout while delete rows still carry the
-target row id needed by the connector. In this table, `orderstatus` is the
-partition column, so it appears in the write partitioning.
+It does not mean the statement only inserts. Insert-like rows are
+hash-partitioned by the insert layout, while delete rows still carry the target
+row id the connector needs. In this table `orderstatus` is the partition column,
+so it shows up in the write partitioning.
 
 
-At this point, `MergeWriter` is not deciding which SQL branch matched. It is
-writing rows that have already been classified.
+By this point, `MergeWriter` is no longer deciding which SQL branch matched. It
+only writes rows that have already been classified.
 
 
-For the Iceberg connector, the important handoff is:
+In the Iceberg connector, the handoff looks like this:
 
 
 ```text
@@ -542,7 +542,7 @@ MergeWriter
 ```
 
 
-The connector splits the incoming page into:
+The connector splits each incoming page into two parts:
 
 
 ```text
@@ -554,10 +554,10 @@ insert rows:
 ```
 
 
-For format version 2, deleted rows become position delete information. For
-format version 3, Iceberg can use deletion-vector information. The useful
-concept is the same: the old Parquet row is hidden by delete metadata; it is
-not edited in place.
+With format version 2, deleted rows become position delete information. With
+format version 3, Iceberg can use deletion-vector information instead. Either
+way, the old Parquet row is hidden by delete metadata rather than edited in
+place.
 
 
 ## Fragment 0: Commit Once
@@ -580,7 +580,7 @@ RemoteSource[sourceFragmentIds = [1]]
 ```
 
 
-Then it gathers them into one stream:
+and gathers them into one stream:
 
 
 ```text
@@ -588,11 +588,12 @@ LocalExchange[partitioning = SINGLE]
 ```
 
 
-This is the final commit boundary. The workers have written physical output and
-returned fragments. The coordinator asks the connector to finish the write.
+This is the commit boundary. The workers have written their physical output and
+returned fragments, and the coordinator now asks the connector to finish the
+write.
 
 
-For Iceberg `MERGE`, the commit shape is:
+For an Iceberg `MERGE`, the commit looks like this:
 
 
 ```text
@@ -605,7 +606,7 @@ IcebergMetadata.finishMerge(...)
 ```
 
 
-The final snapshot can therefore contain both:
+So the final snapshot can contain both kinds of output:
 
 
 ```text
@@ -617,7 +618,7 @@ delete metadata:
 ```
 
 
-That is the full row-change behavior:
+Put together, an update in an Iceberg `MERGE` is:
 
 
 ```text
@@ -631,10 +632,10 @@ MERGE UPDATE in Iceberg
 ## What To Check In Iceberg
 
 
-After running the `MERGE`, these system tables are the fastest sanity checks.
+After running the `MERGE`, two system tables give a quick sanity check.
 
 
-Check that a new snapshot exists:
+First, confirm that a new snapshot exists:
 
 
 ```sql
@@ -648,7 +649,7 @@ ORDER BY committed_at DESC;
 ```
 
 
-Check the current files:
+Then look at the current files:
 
 
 ```sql
@@ -662,8 +663,8 @@ ORDER BY content, file_path;
 ```
 
 
-The exact rows depend on the local run, file format version, and delete-file or
-deletion-vector behavior.
+The exact rows depend on the local run, the format version, and whether delete
+files or deletion vectors are used. What you should expect to see is:
 
 
 ```text
@@ -678,7 +679,7 @@ delete output:
 ## Code Anchors
 
 
-These are useful after the plan shape is clear:
+Once the plan shape is clear, these are the places to look in the source:
 
 
 | Plan idea                                      | Code area                                                                          |
@@ -690,18 +691,16 @@ These are useful after the plan shape is clear:
 | Finish the Iceberg row-change commit           | `plugin/trino-iceberg/src/main/java/io/trino/plugin/iceberg/IcebergMetadata.java`  |
 
 
-## What To Remember
+## Summary
 
-- Read `MERGE` plans by following `RemoteSource`, not by the printed fragment
-order.
-- Fragment 4 scans target rows and exposes `$merge_row_id`.
-- Fragment 3 joins source rows to target rows and builds `merge_row`.
-- Fragment 2 runs duplicate-match protection and `MergeProcessor`.
-- SQL operation `3` means logical `UPDATE`, but Iceberg physically stores that
-as `UPDATE_DELETE` plus `UPDATE_INSERT`.
-- Fragment 1 runs `MergeWriter` and hands classified rows to `IcebergMergeSink`.
-- Fragment 0 commits the final Iceberg `RowDelta`.
-- An Iceberg `MERGE` update does not edit a Parquet row in place.
+Read a `MERGE` plan by following `RemoteSource`, not the printed fragment order.
+Fragment 4 scans the target rows and exposes `$merge_row_id`. Fragment 3 joins
+source rows to target rows and builds `merge_row`. Fragment 2 runs the
+duplicate-match check and `MergeProcessor`, which turns SQL operation `3`
+(logical `UPDATE`) into `UPDATE_DELETE` plus `UPDATE_INSERT` rows. Fragment 1
+runs `MergeWriter` and hands the classified rows to `IcebergMergeSink`, and
+Fragment 0 commits the final Iceberg `RowDelta`. At no point is a Parquet row
+edited in place.
 
 ## Self-Check
 

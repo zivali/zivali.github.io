@@ -25,10 +25,8 @@ engine, Trino asks the connector whether it can use the predicate while planning
 or reading the table.
 
 
-That can reduce work, but it is not one yes/no switch.
-
-
-The useful mental model is:
+That can reduce work, but it is not a single yes/no switch. It helps to keep
+three terms apart:
 
 
 ```text
@@ -43,7 +41,8 @@ remaining:
 ```
 
 
-So “pushed down” does not mean “the engine no longer checks it.”
+So “pushed down” does not mean “the engine no longer checks it.” In this post we
+follow one Iceberg table and two queries to see where each predicate ends up.
 
 
 ## The Setup
@@ -63,7 +62,7 @@ FROM tpch.tiny.orders;
 ```
 
 
-The important part is the partitioning:
+The detail that matters here is the partitioning:
 
 
 ```text
@@ -96,8 +95,8 @@ WHERE o_orderstatus = 'F'
 ```
 
 
-This second query is the useful one for understanding pushdown. It has two
-predicate shapes:
+The second query is the more interesting one, because it mixes two kinds of
+predicate:
 
 
 | Predicate             | Kind                          | Expected behavior                                                         |
@@ -120,7 +119,7 @@ TableScan[table = iceberg:tpch.orders$data@... constraint on [o_orderstatus]]
 ```
 
 
-This proves:
+What this shows is:
 
 
 ```text
@@ -128,8 +127,8 @@ The plan contains an Iceberg table scan with a constraint on o_orderstatus.
 ```
 
 
-It does not prove how many bytes were read. It does not prove row-group pruning.
-It does not prove page-level filtering. It only proves the planned scan shape.
+It says nothing about how many bytes were read, or whether any row-group or
+page-level pruning happened. It only shows the planned scan shape.
 
 
 `EXPLAIN ANALYZE` adds runtime evidence:
@@ -144,7 +143,7 @@ TableScan[table = iceberg:tpch.orders$data@... constraint on [o_orderstatus]]
 ```
 
 
-This proves that, in this run, the scan returned `7304` rows and executed one
+In this run, the scan returned `7304` rows and executed one
 split with `169.66kB` physical input.
 
 
@@ -170,8 +169,8 @@ data file.
 ## What Each Evidence Type Proves
 
 
-Before going deeper into the code path, it helps to separate what each piece of
-evidence can and cannot prove:
+Before going into the code path, here is what each kind of evidence can and
+cannot tell us:
 
 
 | Evidence          | What it proves                                                              | What it does not prove                                            |
@@ -185,7 +184,8 @@ evidence can and cannot prove:
 ## Where Predicate Pushdown Happens
 
 
-Predicate pushdown is not one method call. It happens in layers:
+Pushdown happens in several layers, split between the coordinator and the
+workers:
 
 
 | Layer                    | Trino component                                                           | Where it happens                                                      | What happens                                                                                                          |
@@ -197,7 +197,7 @@ Predicate pushdown is not one method call. It happens in layers:
 | Engine filtering         | Worker execution operators                                                | Worker: filter above the scan, such as `ScanFilterAndProjectOperator` | Trino evaluates the remaining predicate for correctness.                                                              |
 
 
-The full flow is:
+End to end, the flow looks like this:
 
 
 ```text
@@ -223,7 +223,7 @@ Iceberg splits and when a worker builds the page source for a concrete split.
 ## Where Pushdown Enters The Planner
 
 
-The planner rule is:
+Pushdown enters the planner through one optimizer rule:
 
 
 ```text
@@ -231,7 +231,7 @@ PushPredicateIntoTableScan
 ```
 
 
-The shape is:
+The call chain looks like this:
 
 
 ```text
@@ -244,7 +244,7 @@ SQL WHERE predicate
 ```
 
 
-In Trino source, the key planner step is:
+The rule lives in:
 
 
 ```text
@@ -271,15 +271,15 @@ remaining connector expression
 ```
 
 
-That is the first sign that pushdown is negotiated. The engine asks the
-connector what it can use. The connector answers with both new scan state and
-the part Trino must keep.
+This is where pushdown becomes a negotiation. The engine asks the connector what
+it can use, and the connector answers with new scan state plus the part Trino
+must keep.
 
 
 ## How Iceberg Classifies The Predicate
 
 
-Inside Iceberg, the important method is:
+On the Iceberg side, the work happens in:
 
 
 ```text
@@ -322,7 +322,7 @@ should split like this:
 | `o_totalprice > 1000` | `remainingConstraint`     | Trino still applies it above the scan for correctness.                                                                            |
 
 
-The code path matches that mental model:
+Simplified, the classification logic looks like this:
 
 
 ```text
@@ -364,7 +364,7 @@ and returns `remainingConstraint` separately to the engine.
 ## Why The Partition Predicate Is Enforced
 
 
-The helper to remember is:
+The partition check is done by a helper:
 
 
 ```text
@@ -385,7 +385,7 @@ if the partition field transform is identity:
 ```
 
 
-That is why `o_orderstatus = 'F'` is strong. If the table is identity
+That is why `o_orderstatus = 'F'` can be enforced. If the table is identity
 partitioned by `o_orderstatus`, a file in the `F` partition already has that
 partition value. Iceberg can remove files from other partitions before Trino
 workers read them.
@@ -445,7 +445,7 @@ dynamic filter does not add much; in a join, it can give `IcebergSplitSource` an
 `IcebergPageSourceProvider` extra values for file and reader pruning.
 
 
-For this example, the useful part is still:
+For this example, the predicate that matters is still:
 
 
 ```text
@@ -533,7 +533,7 @@ no rows for that split. If the intersection is not empty, the refined predicate
 can still help the Parquet reader with row-group or page pruning.
 
 
-This is useful, but it is still not the same as the connector returning the
+This helps, but it is still not the same as the connector returning the
 predicate as enforced. File statistics can often prove:
 
 
@@ -587,9 +587,8 @@ row group 3:
 ```
 
 
-The important case for the remaining-filter mental model is row group `2`. Its
-stats cannot prove the final answer.
-It may contain rows like:
+Row group `2` is the case that explains the remaining filter. Its stats cannot
+prove the final answer, and it may contain rows like:
 
 
 ```text
@@ -638,21 +637,21 @@ decoded data into engine batches.
 
 ## What To Remember
 
-- Predicate pushdown is a negotiation between the engine and the connector.
-- `PushPredicateIntoTableScan` asks the connector to apply a filter.
-- `IcebergMetadata.applyFilter(...)` classifies predicate domains into
-enforced, unenforced, and remaining buckets.
-- Identity partition predicates, such as `o_orderstatus = 'F'` in this table,
-can be enforced by Iceberg partition metadata.
-- Regular data-column predicates, such as `o_totalprice > 1000`, can still help
-prune files, row groups, or pages, but they may remain as Trino filters.
-- Dynamic filters are runtime predicates, usually learned from joins, and can
-refine split planning or page-source setup.
-- Iceberg metadata pruning and Parquet row-group/page pruning are different
-layers.
-- A Parquet page is a storage-format unit. A Trino `Page` is an in-memory
-execution batch.
-- “Pushed down” does not automatically mean “fully enforced.”
+Predicate pushdown in Trino is a negotiation between the engine and the
+connector. `PushPredicateIntoTableScan` asks the connector to apply a filter,
+and `IcebergMetadata.applyFilter(...)` classifies predicate domains into
+enforced, unenforced, and remaining buckets. Identity partition predicates, such
+as `o_orderstatus = 'F'` in this table, can be enforced by Iceberg partition
+metadata. Regular data-column predicates, such as `o_totalprice > 1000`, can
+still help prune files, row groups, or pages, but they may remain as Trino
+filters. “Pushed down” does not automatically mean “fully enforced.”
+
+
+Dynamic filters are runtime predicates, usually learned from joins, that can
+refine split planning or page-source setup. Iceberg metadata pruning and Parquet
+row-group/page pruning are different layers, and a Parquet page (a
+storage-format unit) is not the same thing as a Trino `Page` (an in-memory
+execution batch).
 
 ## Self-Check
 
